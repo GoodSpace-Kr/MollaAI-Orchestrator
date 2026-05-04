@@ -1,0 +1,39 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+import os
+
+
+@dataclass(frozen=True, slots=True)
+class OrchestratorConfig:
+    host: str = "0.0.0.0"
+    port: int = 8010
+    stt_ws_url: str = "ws://127.0.0.1:8000/stt/ws"
+    llm_http_url: str = "http://127.0.0.1:8001"
+    tts_http_url: str = "http://127.0.0.1:8002"
+    stt_sample_rate: int = 16000
+    tts_sample_rate: int = 24000
+    tts_voice: str = "af_heart"
+    tts_lang_code: str = "a"
+    outbound_frame_bytes: int = 160
+    outbound_frame_ms: float = 0.02
+    llm_sentence_soft_limit: int = 48
+    llm_sentence_hard_limit: int = 96
+
+    @classmethod
+    def from_env(cls) -> "OrchestratorConfig":
+        return cls(
+            host=os.getenv("ORCH_HOST", "0.0.0.0"),
+            port=int(os.getenv("ORCH_PORT", "8010")),
+            stt_ws_url=os.getenv("ORCH_STT_WS_URL", "ws://127.0.0.1:8000/stt/ws"),
+            llm_http_url=os.getenv("ORCH_LLM_HTTP_URL", "http://127.0.0.1:8001"),
+            tts_http_url=os.getenv("ORCH_TTS_HTTP_URL", "http://127.0.0.1:8002"),
+            stt_sample_rate=int(os.getenv("ORCH_STT_SAMPLE_RATE", "16000")),
+            tts_sample_rate=int(os.getenv("ORCH_TTS_SAMPLE_RATE", "24000")),
+            tts_voice=os.getenv("ORCH_TTS_VOICE", "af_heart"),
+            tts_lang_code=os.getenv("ORCH_TTS_LANG_CODE", "a"),
+            outbound_frame_bytes=int(os.getenv("ORCH_OUTBOUND_FRAME_BYTES", "160")),
+            outbound_frame_ms=float(os.getenv("ORCH_OUTBOUND_FRAME_MS", "0.02")),
+            llm_sentence_soft_limit=int(os.getenv("ORCH_LLM_SENTENCE_SOFT_LIMIT", "48")),
+            llm_sentence_hard_limit=int(os.getenv("ORCH_LLM_SENTENCE_HARD_LIMIT", "96")),
+        )
