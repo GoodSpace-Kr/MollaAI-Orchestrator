@@ -49,19 +49,17 @@ jobs:
           --output text)
         echo "ips=$IPs" >> $GITHUB_OUTPUT
 
-    # 5. 각 서버에 접속해서 배포
     - name: Deploy
       run: |
         echo "${{ secrets.EC2_SSH_KEY }}" > private_key.pem
         chmod 600 private_key.pem
-
         for IP in ${{ steps.get-ips.outputs.ips }}; do
           echo "🚀 Deploying to $IP..."
-          ssh -i private_key.pem -o StrictHostKeyChecking=no ubuntu@$IP << EOF
-            docker login -u ${{ secrets.DOCKERHUB_USERNAME }} -p ${{ secrets.DOCKERHUB_TOKEN }}
-            docker stop ${{ env.CONTAINER_NAME }} || true
-            docker rm ${{ env.CONTAINER_NAME }} || true
-            docker pull ${{ env.DOCKERHUB_REPO }}:latest
+          ssh -i private_key.pem -o StrictHostKeyChecking=no ubuntu@$IP "
+            docker login -u ${{ secrets.DOCKERHUB_USERNAME }} -p ${{ secrets.DOCKERHUB_TOKEN }} && \
+            docker stop ${{ env.CONTAINER_NAME }} || true && \
+            docker rm ${{ env.CONTAINER_NAME }} || true && \
+            docker pull ${{ env.DOCKERHUB_REPO }}:latest && \
             docker run -d --name ${{ env.CONTAINER_NAME }} -p 8010:8010 ${{ env.DOCKERHUB_REPO }}:latest
-EOF
+          "
         done
