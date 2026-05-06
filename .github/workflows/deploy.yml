@@ -63,5 +63,5 @@ jobs:
             docker rm ${{ env.CONTAINER_NAME }} || true
             docker pull ${{ env.DOCKERHUB_REPO }}:latest
             docker run -d --name ${{ env.CONTAINER_NAME }} -p 8010:8010 ${{ env.DOCKERHUB_REPO }}:latest
-          EOF
+EOF
         done
