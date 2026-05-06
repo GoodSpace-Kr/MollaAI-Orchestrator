@@ -1,0 +1,67 @@
+name: Deploy to Spot Instance (Docker Hub)
+
+on:
+  push:
+    branches: [ "main" ]
+
+env:
+  DOCKERHUB_REPO: goodspace/molla-orchestrator  # 상화님의 도커허브 ID/리포지토리명으로 수정!
+  ASG_NAME: molla-orchestrator               # 실제 ASG 이름
+  CONTAINER_NAME: molla-orchestrator
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v3
+
+    # 1. 도커 허브 로그인
+    - name: Login to Docker Hub
+      uses: docker/login-action@v2
+      with:
+        username: ${{ secrets.DOCKERHUB_USERNAME }}
+        password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+    # 2. 도커 이미지 빌드 및 푸시
+    - name: Build and push
+      run: |
+        docker build -t ${{ env.DOCKERHUB_REPO }}:latest .
+        docker push ${{ env.DOCKERHUB_REPO }}:latest
+
+    # 3. AWS 인증 (IP를 찾기 위해 필요)
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v1
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ap-northeast-2
+
+    # 4. 실시간 IP 리스트 가져오기
+    - name: Get Instance IPs
+      id: get-ips
+      run: |
+        IPs=$(aws ec2 describe-instances \
+          --filters "Name=tag:aws:autoscaling:groupName,Values=${{ env.ASG_NAME }}" \
+                    "Name=instance-state-name,Values=running" \
+          --query "Reservations[].Instances[].PublicIpAddress" \
+          --output text)
+        echo "ips=$IPs" >> $GITHUB_OUTPUT
+
+    # 5. 각 서버에 접속해서 배포
+    - name: Deploy
+      run: |
+        echo "${{ secrets.EC2_SSH_KEY }}" > private_key.pem
+        chmod 600 private_key.pem
+
+        for IP in ${{ steps.get-ips.outputs.ips }}; do
+          echo "🚀 Deploying to $IP..."
+          ssh -i private_key.pem -o StrictHostKeyChecking=no ubuntu@$IP << EOF
+            docker login -u ${{ secrets.DOCKERHUB_USERNAME }} -p ${{ secrets.DOCKERHUB_TOKEN }}
+            docker stop ${{ env.CONTAINER_NAME }} || true
+            docker rm ${{ env.CONTAINER_NAME }} || true
+            docker pull ${{ env.DOCKERHUB_REPO }}:latest
+            docker run -d --name ${{ env.CONTAINER_NAME }} -p 8010:8010 ${{ env.DOCKERHUB_REPO }}:latest
+          EOF
+        done
