@@ -6,7 +6,7 @@ on:
 
 env:
   DOCKERHUB_REPO: goodspace/molla-orchestrator
-  ASG_NAME: molla-orchestrator               # 실제 ASG 이름
+  ASG_NAME: molla-orchestrator
   CONTAINER_NAME: molla-orchestrator
 
 jobs:
