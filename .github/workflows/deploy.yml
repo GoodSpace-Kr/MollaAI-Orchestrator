@@ -5,7 +5,7 @@ on:
     branches: [ "main" ]
 
 env:
-  DOCKERHUB_REPO: goodspace/molla-orchestrator  # 상화님의 도커허브 ID/리포지토리명으로 수정!
+  DOCKERHUB_REPO: goodspace/molla-orchestrator
   ASG_NAME: molla-orchestrator               # 실제 ASG 이름
   CONTAINER_NAME: molla-orchestrator
 
