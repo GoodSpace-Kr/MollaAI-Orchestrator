@@ -8,7 +8,7 @@ env:
   DOCKERHUB_REPO: goodspace/molla-orchestrator
   CONTAINER_NAME: molla-orchestrator
   # 오케스트레이터 서버의 고정 퍼블릭 IP를 여기에 적어주세요!
-  TARGET_IPS: "3.36.xxx.xxx" 
+  TARGET_IPS: "13.124.118.148" 
 
 jobs:
   deploy:

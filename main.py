@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+import logging
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 from xml.sax.saxutils import escape
@@ -13,9 +14,22 @@ from config import OrchestratorConfig
 from session import CallSession
 
 
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(name)s %(message)s",
+)
+logger = logging.getLogger("molla.orchestrator")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     app.state.config = OrchestratorConfig.from_env()
+    logger.info(
+        "orchestrator_started host=%s port=%s public_base_url=%s",
+        app.state.config.host,
+        app.state.config.port,
+        app.state.config.public_base_url,
+    )
     yield
 
 
@@ -33,6 +47,15 @@ async def clawops_voice_webhook(request: Request) -> Response:
     params = await _get_voice_params(request)
     stream_url = _build_stream_url(request, config)
     xml = _build_voiceml_response(stream_url, params)
+    logger.info(
+        "voice_webhook method=%s client=%s call_id=%s from=%s to=%s stream_url=%s",
+        request.method,
+        request.client.host if request.client else "",
+        params.get("CallId", ""),
+        params.get("From", ""),
+        params.get("To", ""),
+        stream_url,
+    )
     return Response(content=xml, media_type="application/xml")
 
 
@@ -47,6 +70,14 @@ async def clawops_stream_websocket(websocket: WebSocket) -> None:
 
 
 async def _run_orchestrator_session(websocket: WebSocket) -> None:
+    client_host = websocket.client.host if websocket.client else ""
+    client_port = websocket.client.port if websocket.client else ""
+    logger.info(
+        "websocket_connect path=%s client=%s:%s",
+        websocket.url.path,
+        client_host,
+        client_port,
+    )
     await websocket.accept()
 
     config: OrchestratorConfig = websocket.app.state.config
@@ -64,7 +95,20 @@ async def _run_orchestrator_session(websocket: WebSocket) -> None:
             payload = await websocket.receive_json()
             await _handle_event(session, payload)
     except WebSocketDisconnect:
-        pass
+        logger.info(
+            "websocket_disconnect path=%s client=%s:%s",
+            websocket.url.path,
+            client_host,
+            client_port,
+        )
+    except Exception:
+        logger.exception(
+            "websocket_error path=%s client=%s:%s",
+            websocket.url.path,
+            client_host,
+            client_port,
+        )
+        raise
     finally:
         await session.close()
 
@@ -108,6 +152,19 @@ def _build_voiceml_response(stream_url: str, params: dict[str, str]) -> str:
 
 async def _handle_event(session: CallSession, payload: dict[str, Any]) -> None:
     event = str(payload.get("event", "")).strip().lower()
+    stream_sid = ""
+
+    if isinstance(payload.get("streamSid"), str):
+        stream_sid = payload["streamSid"]
+    elif isinstance(payload.get("start"), dict):
+        stream_sid = str(payload["start"].get("streamSid", ""))
+    elif isinstance(payload.get("stop"), dict):
+        stream_sid = str(payload["stop"].get("streamSid", ""))
+
+    if event == "media":
+        logger.debug("clawops_event event=media stream_sid=%s", stream_sid)
+    else:
+        logger.info("clawops_event event=%s stream_sid=%s payload=%s", event, stream_sid, payload)
 
     if event == "connected":
         return
