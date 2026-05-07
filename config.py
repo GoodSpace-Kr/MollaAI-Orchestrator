@@ -8,6 +8,9 @@ import os
 class OrchestratorConfig:
     host: str = "0.0.0.0"
     port: int = 8010
+    public_base_url: str | None = None
+    voice_webhook_path: str = "/voice"
+    stream_websocket_path: str = "/stream"
     stt_ws_url: str = "ws://127.0.0.1:8000/stt/ws"
     llm_http_url: str = "http://127.0.0.1:8001"
     tts_http_url: str = "http://127.0.0.1:8002"
@@ -25,6 +28,9 @@ class OrchestratorConfig:
         return cls(
             host=os.getenv("ORCH_HOST", "0.0.0.0"),
             port=int(os.getenv("ORCH_PORT", "8010")),
+            public_base_url=os.getenv("ORCH_PUBLIC_BASE_URL"),
+            voice_webhook_path=os.getenv("ORCH_VOICE_WEBHOOK_PATH", "/voice"),
+            stream_websocket_path=os.getenv("ORCH_STREAM_WEBSOCKET_PATH", "/stream"),
             stt_ws_url=os.getenv("ORCH_STT_WS_URL", "ws://127.0.0.1:8000/stt/ws"),
             llm_http_url=os.getenv("ORCH_LLM_HTTP_URL", "http://127.0.0.1:8001"),
             tts_http_url=os.getenv("ORCH_TTS_HTTP_URL", "http://127.0.0.1:8002"),

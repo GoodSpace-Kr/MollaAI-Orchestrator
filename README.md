@@ -13,8 +13,12 @@ ClawOps websocket과 `molla-stt`, `molla-llm`, `molla-tts`를 연결하는 오�
 
 ## 엔드포인트
 
+- Voice webhook: `/voice`
+- ClawOps stream WebSocket: `/stream`
 - WebSocket: `/orchestrator/ws`
 - Health: `/healthz`
+
+`/voice`는 ClawOps 인바운드 Voice webhook용 HTTP 엔드포인트입니다. 이 경로는 VoiceML을 반환하며, 내부적으로 `/stream` WebSocket을 가리킵니다.
 
 ## 기본 연결 대상
 
@@ -30,8 +34,30 @@ ClawOps websocket과 `molla-stt`, `molla-llm`, `molla-tts`를 연결하는 오�
 uvicorn main:app --host 0.0.0.0 --port 8010
 ```
 
+ClawOps를 외부에서 연결할 때는 다음 환경 변수를 함께 설정하는 편이 안전합니다.
+
+```bash
+export ORCH_PUBLIC_BASE_URL="https://orchestrator.example.com"
+```
+
+그러면 `/voice` 응답의 VoiceML이 아래처럼 외부용 WebSocket 주소를 생성합니다.
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Connect>
+    <Stream url="wss://orchestrator.example.com/stream" track="inbound">
+      <Parameter name="callId" value="CA..."/>
+      <Parameter name="from" value="010..."/>
+      <Parameter name="to" value="070..."/>
+    </Stream>
+  </Connect>
+</Response>
+```
+
 ## 주요 환경 변수
 
+- `ORCH_PUBLIC_BASE_URL`
 - `ORCH_STT_WS_URL`
 - `ORCH_LLM_HTTP_URL`
 - `ORCH_TTS_HTTP_URL`
