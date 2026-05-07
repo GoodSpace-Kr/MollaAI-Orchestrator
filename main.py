@@ -3,6 +3,7 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 import logging
 from typing import Any
+from urllib.parse import parse_qsl
 from urllib.parse import urlsplit, urlunsplit
 from xml.sax.saxutils import escape
 
@@ -115,8 +116,12 @@ async def _run_orchestrator_session(websocket: WebSocket) -> None:
 
 async def _get_voice_params(request: Request) -> dict[str, str]:
     if request.method == "POST":
-        form = await request.form()
-        return {key: value for key, value in form.items() if isinstance(value, str)}
+        body = await request.body()
+        content_type = request.headers.get("content-type", "")
+        if "application/x-www-form-urlencoded" in content_type:
+            return dict(parse_qsl(body.decode("utf-8"), keep_blank_values=True))
+        logger.warning("voice_webhook_unsupported_content_type content_type=%s", content_type)
+        return {}
     return {key: value for key, value in request.query_params.items()}
 
 
