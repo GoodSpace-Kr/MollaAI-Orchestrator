@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import re
 from dataclasses import dataclass, field
 from typing import Any
@@ -24,6 +25,7 @@ from config import OrchestratorConfig
 
 SENTENCE_END_RE = re.compile(r"(.+?[.!?]+(?:\s+|$))", re.DOTALL)
 GREETING_TEXT = "Hi. this is MollaAI English. welcome to here !"
+logger = logging.getLogger("molla.orchestrator")
 
 
 @dataclass(slots=True)
@@ -113,6 +115,13 @@ class CallSession:
     async def _consume_stt_events(self) -> None:
         async for event in self.stt_client.receive_events():
             event_type = event.get("type")
+            logger.info(
+                "stt_event type=%s session_id=%s revision=%s text=%r",
+                event_type,
+                event.get("session_id", ""),
+                event.get("revision", ""),
+                str(event.get("text", ""))[:200],
+            )
             if event_type != "final":
                 continue
 
@@ -126,6 +135,11 @@ class CallSession:
 
     async def _run_response_pipeline(self, transcript: str) -> None:
         async with self.response_lock:
+            logger.info(
+                "llm_request call_id=%s transcript=%r",
+                self.context.call_id,
+                transcript[:200],
+            )
             self.sentence_buffer = ""
             chunks: list[str] = []
             token_started = False
@@ -176,6 +190,11 @@ class CallSession:
     async def _speak_text(self, text: str) -> None:
         if not text:
             return
+        logger.info(
+            "tts_request call_id=%s text=%r",
+            self.context.call_id,
+            text[:200],
+        )
 
         wav_buffer = WavStreamBuffer()
         pcm_chunks: list[np.ndarray] = []
