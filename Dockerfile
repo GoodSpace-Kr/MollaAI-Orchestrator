@@ -6,9 +6,10 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONPATH=/app \
     ORCH_HOST=0.0.0.0 \
     ORCH_PORT=8010 \
-    ORCH_STT_WS_URL=ws://molla-stt:8000/stt/ws \
-    ORCH_LLM_HTTP_URL=http://molla-llm:8001 \
-    ORCH_TTS_HTTP_URL=http://molla-tts:8002
+    ORCH_STT_WS_URL=ws://3.36.166.43/stt/ws \
+    ORCH_LLM_HTTP_URL=http://internal-molla-llm-lb-563483486.ap-northeast-2.elb.amazonaws.com \
+    ORCH_TTS_HTTP_URL=http://3.36.184.67:8002
+    ORCH_PUBLIC_BASE_URL=https://orch.mollatalk.com
 
 WORKDIR /app
 
