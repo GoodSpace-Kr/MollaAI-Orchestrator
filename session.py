@@ -23,6 +23,7 @@ from config import OrchestratorConfig
 
 
 SENTENCE_END_RE = re.compile(r"(.+?[.!?]+(?:\s+|$))", re.DOTALL)
+GREETING_TEXT = "Hi. this is MollaAI English. welcome to here !"
 
 
 @dataclass(slots=True)
@@ -70,6 +71,9 @@ class CallSession:
         session_id = self.context.call_id or self.context.stream_id or "call-session"
         await self.stt_client.start(session_id=session_id, sample_rate=self.config.stt_sample_rate)
         self._stt_task = asyncio.create_task(self._consume_stt_events(), name=f"stt-events:{session_id}")
+        greeting_task = asyncio.create_task(self._play_greeting(), name=f"greeting:{session_id}")
+        self._response_tasks.add(greeting_task)
+        greeting_task.add_done_callback(self._response_tasks.discard)
 
     async def handle_media(self, payload: dict[str, Any]) -> None:
         media = payload.get("media", {})
@@ -136,6 +140,10 @@ class CallSession:
                 tail = self._flush_sentence_buffer()
                 if tail:
                     await self._speak_text(tail)
+
+    async def _play_greeting(self) -> None:
+        async with self.response_lock:
+            await self._speak_text(GREETING_TEXT)
 
     def _take_ready_sentences(self, token: str) -> list[str]:
         self.sentence_buffer += token
