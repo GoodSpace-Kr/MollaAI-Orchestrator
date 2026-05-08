@@ -26,10 +26,13 @@ logger = logging.getLogger("molla.orchestrator")
 async def lifespan(app: FastAPI):
     app.state.config = OrchestratorConfig.from_env()
     logger.info(
-        "orchestrator_started host=%s port=%s public_base_url=%s",
+        "orchestrator_started host=%s port=%s public_base_url=%s stt_ws_url=%s llm_http_url=%s tts_http_url=%s",
         app.state.config.host,
         app.state.config.port,
         app.state.config.public_base_url,
+        app.state.config.stt_ws_url,
+        app.state.config.llm_http_url,
+        app.state.config.tts_http_url,
     )
     yield
 

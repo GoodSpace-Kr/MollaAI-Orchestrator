@@ -11,7 +11,7 @@ class OrchestratorConfig:
     public_base_url: str | None = None
     voice_webhook_path: str = "/voice"
     stream_websocket_path: str = "/stream"
-    stt_ws_url: str = "ws://3.36.166.43/stt/ws"
+    stt_ws_url: str = "ws://3.36.166.43:8000/stt/ws"
     llm_http_url: str = "http://internal-molla-llm-lb-563483486.ap-northeast-2.elb.amazonaws.com"
     tts_http_url: str = "http://3.36.184.67:8002"
     stt_sample_rate: int = 16000
@@ -31,7 +31,7 @@ class OrchestratorConfig:
             public_base_url=os.getenv("ORCH_PUBLIC_BASE_URL"),
             voice_webhook_path=os.getenv("ORCH_VOICE_WEBHOOK_PATH", "/voice"),
             stream_websocket_path=os.getenv("ORCH_STREAM_WEBSOCKET_PATH", "/stream"),
-            stt_ws_url=os.getenv("ORCH_STT_WS_URL", "ws://3.36.166.43/stt/ws"),
+            stt_ws_url=os.getenv("ORCH_STT_WS_URL", "ws://3.36.166.43:8000/stt/ws"),
             llm_http_url=os.getenv("ORCH_LLM_HTTP_URL", "http://internal-molla-llm-lb-563483486.ap-northeast-2.elb.amazonaws.com"),
             tts_http_url=os.getenv("ORCH_TTS_HTTP_URL", "http://3.36.184.67:8002"),
             stt_sample_rate=int(os.getenv("ORCH_STT_SAMPLE_RATE", "16000")),

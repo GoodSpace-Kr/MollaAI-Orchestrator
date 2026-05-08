@@ -59,6 +59,7 @@ export ORCH_PUBLIC_BASE_URL="https://orchestrator.example.com"
 
 - `ORCH_PUBLIC_BASE_URL`
 - `ORCH_STT_WS_URL`
+  - 예시: `ws://3.36.166.43:8000/stt/ws`
 - `ORCH_LLM_HTTP_URL`
 - `ORCH_TTS_HTTP_URL`
 - `ORCH_STT_SAMPLE_RATE`
