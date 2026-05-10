@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+import time
 from dataclasses import dataclass, field
 from typing import Any, AsyncIterator
 
@@ -38,6 +39,7 @@ class CallContext:
 
 @dataclass(slots=True)
 class SentenceSynthesis:
+    index: int
     text: str
     frame_queue: asyncio.Queue[bytes | None]
     task: asyncio.Task[None]
@@ -242,11 +244,12 @@ class CallSession:
                 continue
             frame_queue: asyncio.Queue[bytes | None] = asyncio.Queue()
             task = asyncio.create_task(
-                self._produce_sentence_audio(cleaned, frame_queue),
+                self._produce_sentence_audio(index, cleaned, frame_queue),
                 name=f"tts:{self.context.call_id}:{index}",
             )
             task_bucket.append(
                 SentenceSynthesis(
+                    index=index,
                     text=cleaned,
                     frame_queue=frame_queue,
                     task=task,
@@ -256,46 +259,82 @@ class CallSession:
     async def _play_sentence_batch(self, sentences: list[SentenceSynthesis]) -> None:
         async with self.playback_lock:
             for sentence in sentences:
+                playback_started_at: float | None = None
+                frames_sent = 0
                 while True:
                     frame = await sentence.frame_queue.get()
                     if frame is None:
                         break
+                    if playback_started_at is None:
+                        playback_started_at = time.perf_counter()
+                        logger.info(
+                            "tts_playback_start call_id=%s sentence=%s text=%r",
+                            self.context.call_id,
+                            sentence.index,
+                            sentence.text[:80],
+                        )
                     await self._send_audio_frame(frame)
+                    frames_sent += 1
                 await sentence.task
+                if playback_started_at is not None:
+                    logger.info(
+                        "tts_playback_done call_id=%s sentence=%s frames=%s playback_ms=%s text=%r",
+                        self.context.call_id,
+                        sentence.index,
+                        frames_sent,
+                        int((time.perf_counter() - playback_started_at) * 1000),
+                        sentence.text[:80],
+                    )
 
-    async def _produce_sentence_audio(self, text: str, frame_queue: asyncio.Queue[bytes | None]) -> None:
+    async def _produce_sentence_audio(self, index: int, text: str, frame_queue: asyncio.Queue[bytes | None]) -> None:
         if not text:
             await frame_queue.put(None)
             return
+        request_started_at = time.perf_counter()
         logger.info(
-            "tts_request call_id=%s text=%r",
+            "tts_request call_id=%s sentence=%s text=%r",
             self.context.call_id,
+            index,
             text[:200],
         )
 
         try:
-            async for frame in self._stream_tts_frames(text):
+            first_frame_logged = False
+            async for frame in self._stream_tts_frames(index, text, request_started_at):
+                if not first_frame_logged:
+                    first_frame_logged = True
+                    logger.info(
+                        "tts_frame_ready call_id=%s sentence=%s ttfb_to_frame_ms=%s text=%r",
+                        self.context.call_id,
+                        index,
+                        int((time.perf_counter() - request_started_at) * 1000),
+                        text[:80],
+                    )
                 await frame_queue.put(frame)
         except httpx.ReadError:
             if self.closed:
                 logger.info(
-                    "tts_stream_closed call_id=%s text=%r",
+                    "tts_stream_closed call_id=%s sentence=%s text=%r",
                     self.context.call_id,
+                    index,
                     text[:80],
                 )
                 return
             logger.warning(
-                "tts_stream_read_error call_id=%s text=%r",
+                "tts_stream_read_error call_id=%s sentence=%s elapsed_ms=%s text=%r",
                 self.context.call_id,
+                index,
+                int((time.perf_counter() - request_started_at) * 1000),
                 text[:80],
             )
         finally:
             await frame_queue.put(None)
 
-    async def _stream_tts_frames(self, text: str) -> AsyncIterator[bytes]:
+    async def _stream_tts_frames(self, index: int, text: str, request_started_at: float) -> AsyncIterator[bytes]:
         wav_buffer = WavStreamBuffer()
         frame_size = self.config.outbound_frame_bytes
         pending_mulaw = bytearray()
+        first_chunk_logged = False
 
         async for wav_chunk in self.tts_client.stream_wav(
             text=text,
@@ -303,6 +342,16 @@ class CallSession:
             lang_code=self.config.tts_lang_code,
             sample_rate=self.config.tts_sample_rate,
         ):
+            if not first_chunk_logged:
+                first_chunk_logged = True
+                logger.info(
+                    "tts_first_chunk call_id=%s sentence=%s ttfb_ms=%s chunk_bytes=%s text=%r",
+                    self.context.call_id,
+                    index,
+                    int((time.perf_counter() - request_started_at) * 1000),
+                    len(wav_chunk),
+                    text[:80],
+                )
             pcm_bytes = wav_buffer.push(wav_chunk)
             if not pcm_bytes:
                 continue
