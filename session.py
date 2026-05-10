@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from typing import Any, AsyncIterator
 
 from fastapi import WebSocket
+import httpx
 
 from audio import (
     WavStreamBuffer,
@@ -78,11 +79,13 @@ class CallSession:
             custom_parameters=dict(start.get("customParameters", {}) or {}),
         )
         session_id = self.context.call_id or self.context.stream_id or "call-session"
+        greeting_task = self._track_task(
+            asyncio.create_task(self._play_greeting(), name=f"greeting:{session_id}")
+        )
+        self._response_tasks.add(greeting_task)
+
         await self.stt_client.start(session_id=session_id, sample_rate=self.config.stt_sample_rate)
         self._stt_task = asyncio.create_task(self._consume_stt_events(), name=f"stt-events:{session_id}")
-        greeting_task = asyncio.create_task(self._play_greeting(), name=f"greeting:{session_id}")
-        self._response_tasks.add(greeting_task)
-        greeting_task.add_done_callback(self._response_tasks.discard)
 
     async def handle_media(self, payload: dict[str, Any]) -> None:
         media = payload.get("media", {})
@@ -136,9 +139,10 @@ class CallSession:
             if not text:
                 continue
 
-            task = asyncio.create_task(self._run_response_pipeline(text), name=f"response:{self.context.call_id}")
+            task = self._track_task(
+                asyncio.create_task(self._run_response_pipeline(text), name=f"response:{self.context.call_id}")
+            )
             self._response_tasks.add(task)
-            task.add_done_callback(self._response_tasks.discard)
 
     async def _run_response_pipeline(self, transcript: str) -> None:
         async with self.response_lock:
@@ -185,6 +189,23 @@ class CallSession:
             self._enqueue_sentence_tasks([GREETING_TEXT], sentences)
             if sentences:
                 await self._play_sentence_batch(sentences)
+
+    def _track_task(self, task: asyncio.Task[None]) -> asyncio.Task[None]:
+        def _on_done(done_task: asyncio.Task[None]) -> None:
+            self._response_tasks.discard(done_task)
+            try:
+                done_task.result()
+            except asyncio.CancelledError:
+                return
+            except Exception:
+                logger.exception(
+                    "background_task_failed call_id=%s task=%s",
+                    self.context.call_id,
+                    done_task.get_name(),
+                )
+
+        task.add_done_callback(_on_done)
+        return task
 
     def _take_ready_sentences(self, token: str) -> list[str]:
         self.sentence_buffer += token
@@ -255,6 +276,19 @@ class CallSession:
         try:
             async for frame in self._stream_tts_frames(text):
                 await frame_queue.put(frame)
+        except httpx.ReadError:
+            if self.closed:
+                logger.info(
+                    "tts_stream_closed call_id=%s text=%r",
+                    self.context.call_id,
+                    text[:80],
+                )
+                return
+            logger.warning(
+                "tts_stream_read_error call_id=%s text=%r",
+                self.context.call_id,
+                text[:80],
+            )
         finally:
             await frame_queue.put(None)
 
