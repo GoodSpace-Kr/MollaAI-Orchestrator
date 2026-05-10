@@ -4,10 +4,9 @@ import asyncio
 import logging
 import re
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, AsyncIterator
 
 from fastapi import WebSocket
-import numpy as np
 
 from audio import (
     WavStreamBuffer,
@@ -36,6 +35,13 @@ class CallContext:
     custom_parameters: dict[str, Any] = field(default_factory=dict)
 
 
+@dataclass(slots=True)
+class SentenceSynthesis:
+    text: str
+    frame_queue: asyncio.Queue[bytes | None]
+    task: asyncio.Task[None]
+
+
 class CallSession:
     def __init__(
         self,
@@ -54,6 +60,7 @@ class CallSession:
         self.context = CallContext()
         self.sequence_number = 1
         self.response_lock = asyncio.Lock()
+        self.playback_lock = asyncio.Lock()
         self.closed = False
         self.sentence_buffer = ""
         self._stt_task: asyncio.Task[None] | None = None
@@ -141,23 +148,43 @@ class CallSession:
                 transcript[:200],
             )
             self.sentence_buffer = ""
-            chunks: list[str] = []
             token_started = False
+            sentences: list[SentenceSynthesis] = []
 
-            async for token in self.llm_client.stream_tokens(transcript):
-                token_started = True
-                chunks.extend(self._take_ready_sentences(token))
-                while chunks:
-                    await self._speak_text(chunks.pop(0))
+            try:
+                async for token in self.llm_client.stream_tokens(transcript):
+                    token_started = True
+                    ready_sentences = self._take_ready_sentences(token)
+                    if not ready_sentences:
+                        continue
 
-            if token_started:
+                    self._enqueue_sentence_tasks(ready_sentences, sentences)
+
+                if not token_started:
+                    return
+
                 tail = self._flush_sentence_buffer()
                 if tail:
-                    await self._speak_text(tail)
+                    self._enqueue_sentence_tasks([tail], sentences)
+
+                if sentences:
+                    await self._play_sentence_batch(sentences)
+            except asyncio.CancelledError:
+                for sentence in sentences:
+                    sentence.task.cancel()
+                for sentence in sentences:
+                    try:
+                        await sentence.task
+                    except asyncio.CancelledError:
+                        pass
+                raise
 
     async def _play_greeting(self) -> None:
         async with self.response_lock:
-            await self._speak_text(GREETING_TEXT)
+            sentences: list[SentenceSynthesis] = []
+            self._enqueue_sentence_tasks([GREETING_TEXT], sentences)
+            if sentences:
+                await self._play_sentence_batch(sentences)
 
     def _take_ready_sentences(self, token: str) -> list[str]:
         self.sentence_buffer += token
@@ -187,8 +214,37 @@ class CallSession:
         self.sentence_buffer = ""
         return remaining
 
-    async def _speak_text(self, text: str) -> None:
+    def _enqueue_sentence_tasks(self, sentences: list[str], task_bucket: list[SentenceSynthesis]) -> None:
+        for index, sentence in enumerate(sentences, start=len(task_bucket) + 1):
+            cleaned = sentence.strip()
+            if not cleaned:
+                continue
+            frame_queue: asyncio.Queue[bytes | None] = asyncio.Queue()
+            task = asyncio.create_task(
+                self._produce_sentence_audio(cleaned, frame_queue),
+                name=f"tts:{self.context.call_id}:{index}",
+            )
+            task_bucket.append(
+                SentenceSynthesis(
+                    text=cleaned,
+                    frame_queue=frame_queue,
+                    task=task,
+                )
+            )
+
+    async def _play_sentence_batch(self, sentences: list[SentenceSynthesis]) -> None:
+        async with self.playback_lock:
+            for sentence in sentences:
+                while True:
+                    frame = await sentence.frame_queue.get()
+                    if frame is None:
+                        break
+                    await self._send_audio_frame(frame)
+                await sentence.task
+
+    async def _produce_sentence_audio(self, text: str, frame_queue: asyncio.Queue[bytes | None]) -> None:
         if not text:
+            await frame_queue.put(None)
             return
         logger.info(
             "tts_request call_id=%s text=%r",
@@ -196,8 +252,17 @@ class CallSession:
             text[:200],
         )
 
+        try:
+            async for frame in self._stream_tts_frames(text):
+                await frame_queue.put(frame)
+        finally:
+            await frame_queue.put(None)
+
+    async def _stream_tts_frames(self, text: str) -> AsyncIterator[bytes]:
         wav_buffer = WavStreamBuffer()
-        pcm_chunks: list[np.ndarray] = []
+        frame_size = self.config.outbound_frame_bytes
+        pending_mulaw = bytearray()
+
         async for wav_chunk in self.tts_client.stream_wav(
             text=text,
             voice=self.config.tts_voice,
@@ -207,22 +272,23 @@ class CallSession:
             pcm_bytes = wav_buffer.push(wav_chunk)
             if not pcm_bytes:
                 continue
-            pcm_chunks.append(bytes_to_pcm16(pcm_bytes))
 
-        if not pcm_chunks:
+            pcm24k = bytes_to_pcm16(pcm_bytes)
+            pcm8k = resample_pcm16(pcm24k, self.config.tts_sample_rate, 8000)
+            pending_mulaw.extend(pcm16_to_mulaw(pcm8k))
+
+            while len(pending_mulaw) >= frame_size:
+                yield bytes(pending_mulaw[:frame_size])
+                del pending_mulaw[:frame_size]
+
+        if pending_mulaw:
+            yield bytes(pending_mulaw)
+
+    async def _send_audio_frame(self, frame: bytes) -> None:
+        if not frame:
             return
-
-        pcm24k = np.concatenate(pcm_chunks)
-        pcm8k = resample_pcm16(pcm24k, self.config.tts_sample_rate, 8000)
-        mulaw = pcm16_to_mulaw(pcm8k)
-
-        frame_size = self.config.outbound_frame_bytes
-        for offset in range(0, len(mulaw), frame_size):
-            frame = mulaw[offset : offset + frame_size]
-            if not frame:
-                continue
-            await self._send_clawops_media(frame)
-            await asyncio.sleep(self.config.outbound_frame_ms)
+        await self._send_clawops_media(frame)
+        await asyncio.sleep(self.config.outbound_frame_ms)
 
     async def _send_clawops_media(self, frame: bytes) -> None:
         payload = {
