@@ -10,7 +10,6 @@ MU_LAW_BIAS = 0x84
 MU_LAW_CLIP = 32635
 WAV_HEADER_BYTES = 44
 
-
 def decode_base64_payload(payload: str) -> bytes:
     return base64.b64decode(payload.encode("ascii"))
 
