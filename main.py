@@ -7,12 +7,13 @@ from urllib.parse import parse_qsl
 from urllib.parse import urlsplit, urlunsplit
 from xml.sax.saxutils import escape
 
-from fastapi import FastAPI, Request, Response, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, Request, Response, WebSocket, WebSocketDisconnect
 import uvicorn
 
 from clients import LlmHttpClient, SttWsClient, TtsHttpClient
 from config import OrchestratorConfig
 from session import CallSession
+from transcript_store import TranscriptStore
 
 
 logging.basicConfig(
@@ -25,11 +26,13 @@ logger = logging.getLogger("molla.orchestrator")
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     app.state.config = OrchestratorConfig.from_env()
+    app.state.transcript_store = TranscriptStore(app.state.config.transcript_dir)
     logger.info(
-        "orchestrator_started host=%s port=%s public_base_url=%s stt_ws_url=%s llm_http_url=%s tts_http_url=%s",
+        "orchestrator_started host=%s port=%s public_base_url=%s transcript_dir=%s stt_ws_url=%s llm_http_url=%s tts_http_url=%s",
         app.state.config.host,
         app.state.config.port,
         app.state.config.public_base_url,
+        app.state.config.transcript_dir,
         app.state.config.stt_ws_url,
         app.state.config.llm_http_url,
         app.state.config.tts_http_url,
@@ -43,6 +46,21 @@ app = FastAPI(title="Molla Orchestrator", lifespan=lifespan)
 @app.get("/healthz")
 def healthcheck() -> dict[str, str]:
     return {"status": "ok"}
+
+
+@app.get("/transcripts")
+async def list_transcripts(request: Request, limit: int = 20) -> dict[str, Any]:
+    transcript_store: TranscriptStore = request.app.state.transcript_store
+    return {"sessions": await transcript_store.list_sessions(limit=max(1, min(limit, 100)))}
+
+
+@app.get("/transcripts/{session_id}")
+async def get_transcript(session_id: str, request: Request) -> dict[str, Any]:
+    transcript_store: TranscriptStore = request.app.state.transcript_store
+    session = await transcript_store.get_session(session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail="Transcript not found")
+    return session
 
 
 @app.api_route("/voice", methods=["GET", "POST"])
@@ -91,6 +109,7 @@ async def _run_orchestrator_session(websocket: WebSocket) -> None:
         stt_client=SttWsClient(config.stt_ws_url),
         llm_client=LlmHttpClient(config.llm_http_url),
         tts_client=TtsHttpClient(config.tts_http_url),
+        transcript_store=websocket.app.state.transcript_store,
     )
     await session.open()
 

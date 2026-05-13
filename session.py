@@ -22,6 +22,7 @@ from audio import (
 )
 from clients import LlmHttpClient, SttWsClient, TtsHttpClient
 from config import OrchestratorConfig
+from transcript_store import TranscriptStore
 
 
 SENTENCE_END_RE = re.compile(r"(.+?[.!?]+(?:\s+|$))", re.DOTALL)
@@ -33,7 +34,7 @@ logger = logging.getLogger("molla.orchestrator")
 class CallContext:
     stream_id: str = ""
     call_id: str = ""
-    account_id: str = ""
+    user_id: str = ""
     custom_parameters: dict[str, Any] = field(default_factory=dict)
 
 
@@ -54,18 +55,22 @@ class CallSession:
         stt_client: SttWsClient,
         llm_client: LlmHttpClient,
         tts_client: TtsHttpClient,
+        transcript_store: TranscriptStore,
     ) -> None:
         self.websocket = websocket
         self.config = config
         self.stt_client = stt_client
         self.llm_client = llm_client
         self.tts_client = tts_client
+        self.transcript_store = transcript_store
         self.context = CallContext()
         self.sequence_number = 1
         self.response_lock = asyncio.Lock()
         self.playback_lock = asyncio.Lock()
         self.closed = False
         self.sentence_buffer = ""
+        self.session_id = "call-session"
+        self.turn_index = 0
         self._stt_task: asyncio.Task[None] | None = None
         self._response_tasks: set[asyncio.Task[None]] = set()
 
@@ -77,17 +82,26 @@ class CallSession:
         self.context = CallContext(
             stream_id=str(start.get("streamId", "")),
             call_id=str(start.get("callId", "")),
-            account_id=str(start.get("accountId", "")),
+            user_id=str(start.get("userId", start.get("accountId", ""))),
             custom_parameters=dict(start.get("customParameters", {}) or {}),
         )
-        session_id = self.context.call_id or self.context.stream_id or "call-session"
+        self.session_id = self.context.call_id or self.context.stream_id or "call-session"
+        await self.transcript_store.start_session(
+            self.session_id,
+            metadata={
+                "call_id": self.context.call_id,
+                "stream_id": self.context.stream_id,
+                "user_id": self.context.user_id,
+                "custom_parameters": dict(self.context.custom_parameters),
+            },
+        )
         greeting_task = self._track_task(
-            asyncio.create_task(self._play_greeting(), name=f"greeting:{session_id}")
+            asyncio.create_task(self._play_greeting(), name=f"greeting:{self.session_id}")
         )
         self._response_tasks.add(greeting_task)
 
-        await self.stt_client.start(session_id=session_id, sample_rate=self.config.stt_sample_rate)
-        self._stt_task = asyncio.create_task(self._consume_stt_events(), name=f"stt-events:{session_id}")
+        await self.stt_client.start(session_id=self.session_id, sample_rate=self.config.stt_sample_rate)
+        self._stt_task = asyncio.create_task(self._consume_stt_events(), name=f"stt-events:{self.session_id}")
 
     async def handle_media(self, payload: dict[str, Any]) -> None:
         media = payload.get("media", {})
@@ -123,6 +137,7 @@ class CallSession:
         await self.stt_client.close()
         await self.llm_client.close()
         await self.tts_client.close()
+        await self.transcript_store.end_session(self.session_id)
 
     async def _consume_stt_events(self) -> None:
         async for event in self.stt_client.receive_events():
@@ -134,10 +149,10 @@ class CallSession:
                 event.get("revision", ""),
                 str(event.get("text", ""))[:200],
             )
+            text = str(event.get("text", "")).strip()
             if event_type != "final":
                 continue
 
-            text = str(event.get("text", "")).strip()
             if not text:
                 continue
 
@@ -148,18 +163,30 @@ class CallSession:
 
     async def _run_response_pipeline(self, transcript: str) -> None:
         async with self.response_lock:
+            self.turn_index += 1
+            turn_index = self.turn_index
             logger.info(
-                "llm_request call_id=%s transcript=%r",
+                "llm_request call_id=%s turn=%s transcript=%r",
                 self.context.call_id,
+                turn_index,
                 transcript[:200],
+            )
+            await self.transcript_store.append_event(
+                self.session_id,
+                source="llm",
+                kind="request",
+                text=transcript,
+                turn=turn_index,
             )
             self.sentence_buffer = ""
             token_started = False
             sentences: list[SentenceSynthesis] = []
+            response_chunks: list[str] = []
 
             try:
                 async for token in self.llm_client.stream_tokens(transcript):
                     token_started = True
+                    response_chunks.append(token)
                     ready_sentences = self._take_ready_sentences(token)
                     if not ready_sentences:
                         continue
@@ -168,6 +195,16 @@ class CallSession:
 
                 if not token_started:
                     return
+
+                response_text = "".join(response_chunks).strip()
+                if response_text:
+                    await self.transcript_store.append_event(
+                        self.session_id,
+                        source="llm",
+                        kind="response",
+                        text=response_text,
+                        turn=turn_index,
+                    )
 
                 tail = self._flush_sentence_buffer()
                 if tail:
