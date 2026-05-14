@@ -1,8 +1,7 @@
-FROM python:3.11-slim
+FROM goodspace/molla-orchestrator-base:py311
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    PIP_NO_CACHE_DIR=1 \
     PYTHONPATH=/app \
     ORCH_HOST=0.0.0.0 \
     ORCH_PORT=8010 \
@@ -12,11 +11,6 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     ORCH_PUBLIC_BASE_URL=https://orch.mollatalk.com
 
 WORKDIR /app
-
-COPY requirements.txt /app/requirements.txt
-
-RUN pip install --upgrade pip setuptools wheel && \
-    pip install -r /app/requirements.txt
 
 COPY . /app
 

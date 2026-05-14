@@ -6,32 +6,53 @@ on:
 
 env:
   DOCKERHUB_REPO: goodspace/molla-orchestrator
+  DOCKERHUB_BASE_REPO: goodspace/molla-orchestrator-base
   CONTAINER_NAME: molla-orchestrator
-  # 오케스트레이터 서버의 고정 퍼블릭 IP를 여기에 적어주세요!
-  TARGET_IPS: "13.124.118.148" 
+  TARGET_IPS: "13.124.118.148"
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    
+
     steps:
     - name: Checkout
       uses: actions/checkout@v3
+      with:
+        fetch-depth: 2
 
-    # 1. 도커 허브 로그인
     - name: Login to Docker Hub
       uses: docker/login-action@v3
       with:
         username: ${{ secrets.DOCKERHUB_USERNAME }}
         password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-    # 2. 도커 이미지 빌드 및 푸시 
-    - name: Build and push
+    - name: Decide whether base image changed
+      id: base_changed
       run: |
-        docker build -t ${{ env.DOCKERHUB_REPO }}:latest .
+        BEFORE_SHA="${{ github.event.before }}"
+        if [ "$BEFORE_SHA" = "0000000000000000000000000000000000000000" ]; then
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+        elif git diff --name-only "$BEFORE_SHA" "${{ github.sha }}" | grep -Eq '^(Dockerfile.base|requirements.txt)$'; then
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+        else
+          echo "changed=false" >> "$GITHUB_OUTPUT"
+        fi
+
+    - name: Build and push base image
+      if: steps.base_changed.outputs.changed == 'true'
+      run: |
+        docker build -f Dockerfile.base \
+          -t ${{ env.DOCKERHUB_BASE_REPO }}:py311 .
+        docker push ${{ env.DOCKERHUB_BASE_REPO }}:py311
+
+    - name: Build and push app image
+      run: |
+        docker build \
+          -t ${{ env.DOCKERHUB_REPO }}:${{ github.sha }} \
+          -t ${{ env.DOCKERHUB_REPO }}:latest .
+        docker push ${{ env.DOCKERHUB_REPO }}:${{ github.sha }}
         docker push ${{ env.DOCKERHUB_REPO }}:latest
 
-    # 3. 서버에 접속해서 배포
     - name: Deploy
       run: |
         printf "%s" "${{ secrets.EC2_SSH_KEY }}" > private_key.pem
@@ -40,11 +61,15 @@ jobs:
         for IP in ${{ env.TARGET_IPS }}; do
           echo "🚀 Deploying to $IP..."
           ssh -i private_key.pem -o StrictHostKeyChecking=no ubuntu@$IP "
-            docker login -u ${{ secrets.DOCKERHUB_USERNAME }} -p ${{ secrets.DOCKERHUB_TOKEN }} && \
-            docker stop ${{ env.CONTAINER_NAME }} || true && \
-            docker rm ${{ env.CONTAINER_NAME }} || true && \
-            docker system prune -a -f || true && \
-            docker pull ${{ env.DOCKERHUB_REPO }}:latest && \
-            docker run -d --name ${{ env.CONTAINER_NAME }} -p 8010:8010 -e ORCH_PUBLIC_BASE_URL=https://orch.mollatalk.com ${{ env.DOCKERHUB_REPO }}:latest
+            set -e
+            IMAGE=${{ env.DOCKERHUB_REPO }}:${{ github.sha }}
+            printf '%s' '${{ secrets.DOCKERHUB_TOKEN }}' | docker login -u '${{ secrets.DOCKERHUB_USERNAME }}' --password-stdin
+            docker stop ${{ env.CONTAINER_NAME }} || true
+            docker rm ${{ env.CONTAINER_NAME }} || true
+            docker image prune -af || true
+            docker builder prune -af || true
+            docker pull \$IMAGE
+            docker run -d --restart unless-stopped --name ${{ env.CONTAINER_NAME }} -p 8010:8010 -e ORCH_PUBLIC_BASE_URL=https://orch.mollatalk.com \$IMAGE
+            docker image prune -af || true
           "
         done

@@ -168,6 +168,7 @@ class CallSession:
         async with self.response_lock:
             self.turn_index += 1
             turn_index = self.turn_index
+            llm_started_at = time.perf_counter()
             logger.info(
                 "llm_request call_id=%s turn=%s transcript=%r",
                 self.context.call_id,
@@ -183,20 +184,46 @@ class CallSession:
             )
             self.sentence_buffer = ""
             token_started = False
+            first_sentence_logged = False
+            token_count = 0
             sentences: list[SentenceSynthesis] = []
             response_chunks: list[str] = []
 
             try:
                 async for token in self.llm_client.stream_tokens(transcript):
+                    token_count += 1
+                    if not token_started:
+                        logger.info(
+                            "llm_first_token call_id=%s turn=%s latency_ms=%s token=%r",
+                            self.context.call_id,
+                            turn_index,
+                            int((time.perf_counter() - llm_started_at) * 1000),
+                            token[:80],
+                        )
                     token_started = True
                     response_chunks.append(token)
                     ready_sentences = self._take_ready_sentences(token)
                     if not ready_sentences:
                         continue
 
+                    if not first_sentence_logged:
+                        first_sentence_logged = True
+                        logger.info(
+                            "llm_first_sentence call_id=%s turn=%s latency_ms=%s sentence=%r",
+                            self.context.call_id,
+                            turn_index,
+                            int((time.perf_counter() - llm_started_at) * 1000),
+                            ready_sentences[0][:120],
+                        )
                     self._enqueue_sentence_tasks(ready_sentences, sentences)
 
                 if not token_started:
+                    logger.warning(
+                        "llm_empty_response call_id=%s turn=%s elapsed_ms=%s",
+                        self.context.call_id,
+                        turn_index,
+                        int((time.perf_counter() - llm_started_at) * 1000),
+                    )
                     return
 
                 response_text = "".join(response_chunks).strip()
@@ -211,7 +238,26 @@ class CallSession:
 
                 tail = self._flush_sentence_buffer()
                 if tail:
+                    if not first_sentence_logged:
+                        first_sentence_logged = True
+                        logger.info(
+                            "llm_first_sentence call_id=%s turn=%s latency_ms=%s sentence=%r",
+                            self.context.call_id,
+                            turn_index,
+                            int((time.perf_counter() - llm_started_at) * 1000),
+                            tail[:120],
+                        )
                     self._enqueue_sentence_tasks([tail], sentences)
+
+                logger.info(
+                    "llm_stream_done call_id=%s turn=%s elapsed_ms=%s tokens=%s chars=%s sentences=%s",
+                    self.context.call_id,
+                    turn_index,
+                    int((time.perf_counter() - llm_started_at) * 1000),
+                    token_count,
+                    len(response_text),
+                    len(sentences),
+                )
 
                 if sentences:
                     await self._play_sentence_batch(sentences)
@@ -223,6 +269,15 @@ class CallSession:
                         await sentence.task
                     except asyncio.CancelledError:
                         pass
+                raise
+            except Exception:
+                logger.exception(
+                    "llm_pipeline_failed call_id=%s turn=%s elapsed_ms=%s tokens=%s",
+                    self.context.call_id,
+                    turn_index,
+                    int((time.perf_counter() - llm_started_at) * 1000),
+                    token_count,
+                )
                 raise
 
     async def _play_greeting(self) -> None:
