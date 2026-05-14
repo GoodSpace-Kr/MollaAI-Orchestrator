@@ -136,6 +136,26 @@ class TranscriptStore:
                 for session in sessions[:limit]
             ]
 
+    def render_transcript_text(self, session: dict[str, Any]) -> str:
+        lines: list[str] = []
+        for entry in session.get("entries", []):
+            text = str(entry.get("text", "")).strip()
+            if not text:
+                continue
+
+            source = str(entry.get("source", "")).strip().lower()
+            kind = str(entry.get("kind", "")).strip().lower()
+            if source == "llm" and kind == "request":
+                speaker = "User"
+            elif source == "llm" and kind == "response":
+                speaker = "Assistant"
+            else:
+                speaker = source or "Unknown"
+
+            lines.append(f"{speaker}: {text}")
+
+        return "\n".join(lines)
+
     def _session_path(self, session_id: str) -> Path:
         return self.base_dir / f"{_safe_session_id(session_id)}.json"
 

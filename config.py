@@ -12,6 +12,8 @@ class OrchestratorConfig:
     voice_webhook_path: str = "/voice"
     stream_websocket_path: str = "/stream"
     transcript_dir: str = "./transcripts"
+    backend_session_start_url: str | None = None
+    backend_session_end_url_template: str | None = None
     stt_ws_url: str = "ws://3.36.166.43:8000/stt/ws"
     llm_http_url: str = "http://internal-molla-llm-lb-563483486.ap-northeast-2.elb.amazonaws.com"
     tts_http_url: str = "http://3.36.184.67:8002"
@@ -33,6 +35,14 @@ class OrchestratorConfig:
             voice_webhook_path=os.getenv("ORCH_VOICE_WEBHOOK_PATH", "/voice"),
             stream_websocket_path=os.getenv("ORCH_STREAM_WEBSOCKET_PATH", "/stream"),
             transcript_dir=os.getenv("ORCH_TRANSCRIPT_DIR", "./transcripts"),
+            backend_session_start_url=os.getenv(
+                "ORCH_BACKEND_SESSION_START_URL",
+                "https://www.mollatalk.com/api/v1/internal/sessions/start",
+            ),
+            backend_session_end_url_template=os.getenv(
+                "ORCH_BACKEND_SESSION_END_URL_TEMPLATE",
+                "https://www.mollatalk.com/api/v1/internal/sessions/{session_id}/end",
+            ),
             stt_ws_url=os.getenv("ORCH_STT_WS_URL", "ws://172.31.33.2:8000/stt/ws"),
             llm_http_url=os.getenv("ORCH_LLM_HTTP_URL", "http://internal-molla-llm-lb-563483486.ap-northeast-2.elb.amazonaws.com"),
             tts_http_url=os.getenv("ORCH_TTS_HTTP_URL", "http://172.31.33.2:8002"),

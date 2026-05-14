@@ -70,6 +70,7 @@ class CallSession:
         self.closed = False
         self.sentence_buffer = ""
         self.session_id = "call-session"
+        self.backend_session_id = ""
         self.turn_index = 0
         self._stt_task: asyncio.Task[None] | None = None
         self._response_tasks: set[asyncio.Task[None]] = set()
@@ -95,6 +96,7 @@ class CallSession:
                 "custom_parameters": dict(self.context.custom_parameters),
             },
         )
+        await self._send_session_started()
         greeting_task = self._track_task(
             asyncio.create_task(self._play_greeting(), name=f"greeting:{self.session_id}")
         )
@@ -138,6 +140,7 @@ class CallSession:
         await self.llm_client.close()
         await self.tts_client.close()
         await self.transcript_store.end_session(self.session_id)
+        await self._send_completed_transcript()
 
     async def _consume_stt_events(self) -> None:
         async for event in self.stt_client.receive_events():
@@ -228,6 +231,103 @@ class CallSession:
             self._enqueue_sentence_tasks([GREETING_TEXT], sentences)
             if sentences:
                 await self._play_sentence_batch(sentences)
+
+    async def _send_session_started(self) -> None:
+        if not self.config.backend_session_start_url:
+            return
+
+        phone_number = self._normalize_phone_number(
+            str(self.context.custom_parameters.get("from", ""))
+        )
+        call_sid = self.context.call_id.strip()
+        if not phone_number or not call_sid:
+            logger.info(
+                "session_start_skipped session_id=%s phone_number=%r call_sid=%r",
+                self.session_id,
+                phone_number,
+                call_sid,
+            )
+            return
+
+        payload = {
+            "phoneNumber": phone_number,
+            "callSid": call_sid,
+        }
+
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                response = await client.post(self.config.backend_session_start_url, json=payload)
+                response.raise_for_status()
+                data = response.json()
+            backend_session_id = str(data.get("id", "")).strip() if isinstance(data, dict) else ""
+            if not backend_session_id:
+                logger.warning(
+                    "session_started_missing_id session_id=%s url=%s payload=%s",
+                    self.session_id,
+                    self.config.backend_session_start_url,
+                    data,
+                )
+                return
+            self.backend_session_id = backend_session_id
+            logger.info(
+                "session_started_uploaded session_id=%s backend_session_id=%s url=%s phone_number=%s call_sid=%s",
+                self.session_id,
+                self.backend_session_id,
+                self.config.backend_session_start_url,
+                phone_number,
+                call_sid,
+            )
+        except Exception:
+            logger.exception(
+                "session_start_upload_failed session_id=%s url=%s",
+                self.session_id,
+                self.config.backend_session_start_url,
+            )
+
+    async def _send_completed_transcript(self) -> None:
+        if not self.backend_session_id:
+            logger.info("transcript_upload_skipped session_id=%s reason=missing_backend_session_id", self.session_id)
+            return
+
+        if not self.config.backend_session_end_url_template:
+            return
+
+        session = await self.transcript_store.get_session(self.session_id)
+        if session is None:
+            return
+
+        transcript_text = self.transcript_store.render_transcript_text(session)
+        if not transcript_text:
+            logger.info("transcript_upload_skipped session_id=%s reason=empty", self.session_id)
+            return
+
+        payload = {
+            "status": "completed",
+            "transcript": transcript_text,
+        }
+        end_url = self.config.backend_session_end_url_template.format(session_id=self.backend_session_id)
+
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                response = await client.post(end_url, json=payload)
+                response.raise_for_status()
+            logger.info(
+                "transcript_uploaded session_id=%s backend_session_id=%s url=%s chars=%s",
+                self.session_id,
+                self.backend_session_id,
+                end_url,
+                len(transcript_text),
+            )
+        except Exception:
+            logger.exception(
+                "transcript_upload_failed session_id=%s backend_session_id=%s url=%s",
+                self.session_id,
+                self.backend_session_id,
+                end_url,
+            )
+
+    def _normalize_phone_number(self, value: str) -> str:
+        return re.sub(r"[-\s]", "", value).strip()
 
     def _track_task(self, task: asyncio.Task[None]) -> asyncio.Task[None]:
         def _on_done(done_task: asyncio.Task[None]) -> None:
