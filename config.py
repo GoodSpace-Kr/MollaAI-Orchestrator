@@ -37,11 +37,11 @@ class OrchestratorConfig:
             transcript_dir=os.getenv("ORCH_TRANSCRIPT_DIR", "./transcripts"),
             backend_session_start_url=os.getenv(
                 "ORCH_BACKEND_SESSION_START_URL",
-                "https://www.mollatalk.com/api/v1/internal/sessions/start",
+                "https://www.mollatalk.com:8080/api/v1/internal/sessions/start",
             ),
             backend_session_end_url_template=os.getenv(
                 "ORCH_BACKEND_SESSION_END_URL_TEMPLATE",
-                "https://www.mollatalk.com/api/v1/internal/sessions/{session_id}/end",
+                "https://www.mollatalk.com:8080/api/v1/internal/sessions/{session_id}/end",
             ),
             stt_ws_url=os.getenv("ORCH_STT_WS_URL", "ws://172.31.33.2:8000/stt/ws"),
             llm_http_url=os.getenv("ORCH_LLM_HTTP_URL", "http://internal-molla-llm-lb-563483486.ap-northeast-2.elb.amazonaws.com"),
