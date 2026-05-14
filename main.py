@@ -28,7 +28,7 @@ async def lifespan(app: FastAPI):
     app.state.config = OrchestratorConfig.from_env()
     app.state.transcript_store = TranscriptStore(app.state.config.transcript_dir)
     logger.info(
-        "orchestrator_started host=%s port=%s public_base_url=%s transcript_dir=%s stt_ws_url=%s llm_http_url=%s tts_http_url=%s",
+        "orchestrator_started host=%s port=%s public_base_url=%s transcript_dir=%s stt_ws_url=%s llm_http_url=%s tts_http_url=%s backend_session_start_url=%s backend_session_end_url_template=%s",
         app.state.config.host,
         app.state.config.port,
         app.state.config.public_base_url,
@@ -36,6 +36,8 @@ async def lifespan(app: FastAPI):
         app.state.config.stt_ws_url,
         app.state.config.llm_http_url,
         app.state.config.tts_http_url,
+        app.state.config.backend_session_start_url,
+        app.state.config.backend_session_end_url_template,
     )
     yield
 
