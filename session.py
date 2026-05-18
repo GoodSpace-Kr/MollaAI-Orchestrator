@@ -369,7 +369,7 @@ class CallSession:
 
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
-                response = await client.post(end_url, json=payload)
+                response = await client.patch(end_url, json=payload)
                 response.raise_for_status()
             logger.info(
                 "transcript_uploaded session_id=%s backend_session_id=%s url=%s chars=%s",
