@@ -314,7 +314,12 @@ class CallSession:
                 response = await client.post(self.config.backend_session_start_url, json=payload)
                 response.raise_for_status()
                 data = response.json()
-            backend_session_id = str(data.get("id", "")).strip() if isinstance(data, dict) else ""
+            backend_session_id = ""
+            if isinstance(data, dict):
+                nested = data.get("data", {})
+                backend_session_id = str(
+                    data.get("id", nested.get("id", "") if isinstance(nested, dict) else "")
+                ).strip()
             if not backend_session_id:
                 logger.warning(
                     "session_started_missing_id session_id=%s url=%s payload=%s",
