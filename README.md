@@ -8,6 +8,7 @@ ClawOps websocket과 `molla-stt`, `molla-llm`, `molla-tts`를 연결하는 오�
 - mu-law 디코드 후 PCM16으로 변환
 - STT 입력 샘플레이트로 리샘플링 후 `molla-stt` websocket 전달
 - STT `final` 이벤트 수신 시 `molla-llm` 토큰 스트림 호출
+- STT `final` 이벤트 직전까지의 사용자 오디오와 확정 텍스트를 발화 단위로 메모리에 보관
 - 생성 텍스트를 문장 단위로 잘라 `molla-tts`에 앞당겨 요청
 - 반환된 WAV PCM을 8kHz mono mu-law로 변환 후 ClawOps websocket으로 전송
 
@@ -66,3 +67,12 @@ export ORCH_PUBLIC_BASE_URL="https://orchestrator.example.com"
 - `ORCH_TTS_SAMPLE_RATE`
 - `ORCH_TTS_VOICE`
 - `ORCH_TTS_LANG_CODE`
+
+## 세션 종료 업로드
+
+세션 종료 시 backend end API payload에는 기존 `transcript`와 함께 `utterances` 배열이 포함됩니다.
+
+- 각 utterance는 STT `final` 1건에 대응합니다
+- `text`는 LLM 요청 직전에 사용한 최종 사용자 발화입니다
+- 각 utterance는 `text`, `audio`, `sampleRate`, `encoding` 네 필드만 포함합니다
+- `audio`는 해당 발화 직전까지 누적한 16kHz `pcm16le/base64` 오디오입니다

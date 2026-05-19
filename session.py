@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import logging
 import re
 import time
@@ -46,6 +47,21 @@ class SentenceSynthesis:
     task: asyncio.Task[None]
 
 
+@dataclass(slots=True)
+class UserUtterance:
+    text: str
+    sample_rate: int
+    pcm16_audio: bytes
+
+    def to_payload(self) -> dict[str, Any]:
+        return {
+            "text": self.text,
+            "sampleRate": self.sample_rate,
+            "encoding": "pcm16le/base64",
+            "audio": base64.b64encode(self.pcm16_audio).decode("ascii"),
+        }
+
+
 class CallSession:
     def __init__(
         self,
@@ -74,6 +90,8 @@ class CallSession:
         self.turn_index = 0
         self._stt_task: asyncio.Task[None] | None = None
         self._response_tasks: set[asyncio.Task[None]] = set()
+        self._pending_user_audio = bytearray()
+        self._utterances: list[UserUtterance] = []
 
     async def open(self) -> None:
         await self.stt_client.connect()
@@ -114,7 +132,10 @@ class CallSession:
         mulaw_audio = decode_base64_payload(encoded)
         pcm8k = mulaw_to_pcm16(mulaw_audio)
         pcm_stt = resample_pcm16(pcm8k, 8000, self.config.stt_sample_rate)
-        await self.stt_client.send_audio(pcm16_to_bytes(pcm_stt))
+        pcm_stt_bytes = pcm16_to_bytes(pcm_stt)
+        if pcm_stt_bytes:
+            self._pending_user_audio.extend(pcm_stt_bytes)
+        await self.stt_client.send_audio(pcm_stt_bytes)
 
     async def close(self) -> None:
         if self.closed:
@@ -158,6 +179,8 @@ class CallSession:
 
             if not text:
                 continue
+
+            self._store_final_utterance(text)
 
             task = self._track_task(
                 asyncio.create_task(self._run_response_pipeline(text), name=f"response:{self.context.call_id}")
@@ -364,6 +387,7 @@ class CallSession:
         payload = {
             "status": "completed",
             "transcript": transcript_text,
+            "utterances": [utterance.to_payload() for utterance in self._utterances],
         }
         end_url = self.config.backend_session_end_url_template.format(session_id=self.backend_session_id)
 
@@ -388,6 +412,26 @@ class CallSession:
 
     def _normalize_phone_number(self, value: str) -> str:
         return re.sub(r"[-\s]", "", value).strip()
+
+    def _store_final_utterance(self, text: str) -> None:
+        cleaned = text.strip()
+        if not cleaned:
+            self._pending_user_audio.clear()
+            return
+
+        audio_bytes = bytes(self._pending_user_audio)
+        self._pending_user_audio.clear()
+        if not audio_bytes:
+            logger.info("utterance_capture_skipped session_id=%s reason=empty_audio", self.session_id)
+            return
+
+        self._utterances.append(
+            UserUtterance(
+                text=cleaned,
+                sample_rate=self.config.stt_sample_rate,
+                pcm16_audio=audio_bytes,
+            )
+        )
 
     def _track_task(self, task: asyncio.Task[None]) -> asyncio.Task[None]:
         def _on_done(done_task: asyncio.Task[None]) -> None:
