@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import base64
 from copy import deepcopy
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -25,9 +24,8 @@ class ConversationTurn:
     index: int
     created_at: str
     user_text: str
-    user_audio: str
     sample_rate: int
-    encoding: str = "pcm16le/base64"
+    user_audio_key: str | None = None
     assistant_text: str = ""
     assistant_created_at: str | None = None
     llm_turn: int | None = None
@@ -37,21 +35,21 @@ class ConversationTurn:
             "index": self.index,
             "created_at": self.created_at,
             "user_text": self.user_text,
-            "user_audio": self.user_audio,
             "sample_rate": self.sample_rate,
-            "encoding": self.encoding,
+            "user_audio_key": self.user_audio_key,
             "assistant_text": self.assistant_text,
             "assistant_created_at": self.assistant_created_at,
             "llm_turn": self.llm_turn,
         }
 
     def utterance_payload(self) -> dict[str, Any]:
-        return {
+        payload = {
             "text": self.user_text,
             "sampleRate": self.sample_rate,
-            "encoding": self.encoding,
-            "audio": self.user_audio,
         }
+        if self.user_audio_key:
+            payload["audioKey"] = self.user_audio_key
+        return payload
 
     def payload(self) -> dict[str, Any]:
         data = {
@@ -111,8 +109,8 @@ class TranscriptStore:
         session_id: str,
         *,
         user_text: str,
-        user_audio: bytes,
         sample_rate: int,
+        audio_key: str | None = None,
     ) -> ConversationTurn:
         cleaned = user_text.strip()
         if not cleaned:
@@ -128,12 +126,39 @@ class TranscriptStore:
                 index=len(session.turns) + 1,
                 created_at=_utc_now(),
                 user_text=cleaned,
-                user_audio=base64.b64encode(user_audio).decode("ascii"),
                 sample_rate=sample_rate,
+                user_audio_key=audio_key,
             )
             session.turns.append(turn)
             self._persist_session(session)
             return turn
+
+    async def set_turn_audio_key(
+        self,
+        session_id: str,
+        *,
+        turn_index: int,
+        audio_key: str,
+    ) -> None:
+        if not audio_key.strip():
+            return
+
+        async with self._lock:
+            session = self._sessions.get(session_id)
+            if session is None:
+                session = self._load_session(session_id)
+                if session is None:
+                    return
+                self._sessions[session_id] = session
+
+            for turn in session.turns:
+                if turn.index != turn_index:
+                    continue
+                turn.user_audio_key = audio_key.strip()
+                self._persist_session(session)
+                return
+
+            raise ValueError(f"Conversation turn {turn_index} not found for session {session_id}.")
 
     async def set_assistant_response(
         self,
@@ -260,9 +285,8 @@ class TranscriptStore:
             index=int(data.get("index", 0) or 0),
             created_at=str(data.get("created_at", _utc_now())),
             user_text=str(data.get("user_text", "")).strip(),
-            user_audio=str(data.get("user_audio", "")),
             sample_rate=int(data.get("sample_rate", 0) or 0),
-            encoding=str(data.get("encoding", "pcm16le/base64")),
+            user_audio_key=self._coerce_audio_key(data),
             assistant_text=str(data.get("assistant_text", "")).strip(),
             assistant_created_at=data.get("assistant_created_at"),
             llm_turn=int(data["llm_turn"]) if data.get("llm_turn") is not None else None,
@@ -291,7 +315,6 @@ class TranscriptStore:
                         index=len(turns) + 1,
                         created_at=str(pending_user.get("created_at", _utc_now())),
                         user_text=str(pending_user.get("text", "")).strip(),
-                        user_audio="",
                         sample_rate=0,
                         assistant_text=text,
                         assistant_created_at=str(entry.get("created_at", _utc_now())),
@@ -306,10 +329,18 @@ class TranscriptStore:
                     index=len(turns) + 1,
                     created_at=str(pending_user.get("created_at", _utc_now())),
                     user_text=str(pending_user.get("text", "")).strip(),
-                    user_audio="",
                     sample_rate=0,
                     llm_turn=pending_user.get("turn"),
                 )
             )
 
         return turns
+
+    def _coerce_audio_key(self, data: dict[str, Any]) -> str | None:
+        raw_audio_key = data.get("user_audio_key")
+        audio_key = str(raw_audio_key).strip() if raw_audio_key is not None else ""
+        if audio_key:
+            return audio_key
+        raw_legacy_key = data.get("audio_key")
+        legacy_key = str(raw_legacy_key).strip() if raw_legacy_key is not None else ""
+        return legacy_key or None

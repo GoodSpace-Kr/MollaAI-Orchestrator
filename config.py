@@ -25,6 +25,9 @@ class OrchestratorConfig:
     outbound_frame_ms: float = 0.02
     llm_sentence_soft_limit: int = 48
     llm_sentence_hard_limit: int = 96
+    s3_audio_bucket: str | None = None
+    s3_audio_prefix: str = "calls"
+    aws_region: str = "ap-northeast-2"
 
     @classmethod
     def from_env(cls) -> "OrchestratorConfig":
@@ -54,4 +57,7 @@ class OrchestratorConfig:
             outbound_frame_ms=float(os.getenv("ORCH_OUTBOUND_FRAME_MS", "0.02")),
             llm_sentence_soft_limit=int(os.getenv("ORCH_LLM_SENTENCE_SOFT_LIMIT", "48")),
             llm_sentence_hard_limit=int(os.getenv("ORCH_LLM_SENTENCE_HARD_LIMIT", "96")),
+            s3_audio_bucket=os.getenv("ORCH_S3_AUDIO_BUCKET"),
+            s3_audio_prefix=os.getenv("ORCH_S3_AUDIO_PREFIX", "calls"),
+            aws_region=os.getenv("AWS_REGION", "ap-northeast-2"),
         )

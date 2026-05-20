@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import base64
 from dataclasses import dataclass, field
+import io
+import wave
 
 import numpy as np
 
@@ -98,3 +100,13 @@ class WavStreamBuffer:
         pcm = bytes(self._buffer[:pcm_length])
         del self._buffer[:pcm_length]
         return pcm
+
+
+def pcm16_bytes_to_wav(payload: bytes, sample_rate: int, channels: int = 1) -> bytes:
+    buffer = io.BytesIO()
+    with wave.open(buffer, "wb") as wav_file:
+        wav_file.setnchannels(max(1, channels))
+        wav_file.setsampwidth(2)
+        wav_file.setframerate(sample_rate)
+        wav_file.writeframes(payload)
+    return buffer.getvalue()

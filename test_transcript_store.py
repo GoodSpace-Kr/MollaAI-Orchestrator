@@ -18,8 +18,8 @@ class TranscriptStoreTests(unittest.IsolatedAsyncioTestCase):
             first_turn = await store.append_turn(
                 "session-1",
                 user_text="hello there",
-                user_audio=b"\x01\x02",
                 sample_rate=16000,
+                audio_key="calls/call-1/turns/1.wav",
             )
             await store.set_assistant_response(
                 "session-1",
@@ -31,8 +31,8 @@ class TranscriptStoreTests(unittest.IsolatedAsyncioTestCase):
             second_turn = await store.append_turn(
                 "session-1",
                 user_text="second question",
-                user_audio=b"",
                 sample_rate=16000,
+                audio_key=None,
             )
             await store.set_assistant_response(
                 "session-1",
@@ -48,11 +48,12 @@ class TranscriptStoreTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(len(payload["turns"]), 2)
             self.assertEqual(payload["turns"][0]["index"], 1)
             self.assertEqual(payload["turns"][0]["user"]["text"], "hello there")
-            self.assertEqual(payload["turns"][0]["user"]["audio"], base64.b64encode(b"\x01\x02").decode("ascii"))
+            self.assertEqual(payload["turns"][0]["user"]["audioKey"], "calls/call-1/turns/1.wav")
             self.assertEqual(payload["turns"][0]["assistant"]["text"], "hi")
             self.assertEqual(payload["turns"][1]["index"], 2)
             self.assertEqual(payload["turns"][1]["user"]["text"], "second question")
-            self.assertEqual(payload["turns"][1]["user"]["audio"], "")
+            self.assertNotIn("audio", payload["turns"][1]["user"])
+            self.assertNotIn("audioKey", payload["turns"][1]["user"])
             self.assertEqual(payload["turns"][1]["assistant"]["text"], "second answer")
 
     async def test_loads_legacy_entries_as_turns(self) -> None:
@@ -90,7 +91,8 @@ class TranscriptStoreTests(unittest.IsolatedAsyncioTestCase):
 
             self.assertEqual(len(payload["turns"]), 1)
             self.assertEqual(payload["turns"][0]["user"]["text"], "legacy user")
-            self.assertEqual(payload["turns"][0]["user"]["audio"], "")
+            self.assertNotIn("audio", payload["turns"][0]["user"])
+            self.assertNotIn("audioKey", payload["turns"][0]["user"])
             self.assertEqual(payload["turns"][0]["assistant"]["text"], "legacy assistant")
 
 

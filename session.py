@@ -16,12 +16,14 @@ from audio import (
     decode_base64_payload,
     encode_base64_payload,
     mulaw_to_pcm16,
+    pcm16_bytes_to_wav,
     pcm16_to_bytes,
     pcm16_to_mulaw,
     resample_pcm16,
 )
 from clients import LlmHttpClient, SttWsClient, TtsHttpClient
 from config import OrchestratorConfig
+from storage import S3AudioStorage
 from transcript_store import ConversationTurn, TranscriptStore
 
 
@@ -56,6 +58,7 @@ class CallSession:
         llm_client: LlmHttpClient,
         tts_client: TtsHttpClient,
         transcript_store: TranscriptStore,
+        audio_storage: S3AudioStorage | None,
     ) -> None:
         self.websocket = websocket
         self.config = config
@@ -63,6 +66,7 @@ class CallSession:
         self.llm_client = llm_client
         self.tts_client = tts_client
         self.transcript_store = transcript_store
+        self.audio_storage = audio_storage
         self.context = CallContext()
         self.sequence_number = 1
         self.response_lock = asyncio.Lock()
@@ -74,6 +78,7 @@ class CallSession:
         self.turn_index = 0
         self._stt_task: asyncio.Task[None] | None = None
         self._response_tasks: set[asyncio.Task[None]] = set()
+        self._audio_upload_tasks: set[asyncio.Task[None]] = set()
         self._pending_user_audio = bytearray()
 
     async def open(self) -> None:
@@ -135,6 +140,12 @@ class CallSession:
         for task in list(self._response_tasks):
             task.cancel()
         for task in list(self._response_tasks):
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+
+        for task in list(self._audio_upload_tasks):
             try:
                 await task
             except asyncio.CancelledError:
@@ -398,11 +409,60 @@ class CallSession:
         if not audio_bytes:
             logger.warning("conversation_turn_empty_audio session_id=%s text=%r", self.session_id, cleaned[:120])
 
-        return await self.transcript_store.append_turn(
+        turn = await self.transcript_store.append_turn(
             self.session_id,
             user_text=cleaned,
-            user_audio=audio_bytes,
             sample_rate=self.config.stt_sample_rate,
+        )
+        if audio_bytes and self.audio_storage is not None:
+            task = self._track_audio_upload_task(
+                asyncio.create_task(
+                    self._upload_turn_audio(turn.index, audio_bytes),
+                    name=f"audio-upload:{self.context.call_id}:{turn.index}",
+                )
+            )
+            self._audio_upload_tasks.add(task)
+        return turn
+
+    def _track_audio_upload_task(self, task: asyncio.Task[None]) -> asyncio.Task[None]:
+        def _on_done(done_task: asyncio.Task[None]) -> None:
+            self._audio_upload_tasks.discard(done_task)
+            try:
+                done_task.result()
+            except asyncio.CancelledError:
+                return
+            except Exception:
+                logger.exception(
+                    "audio_upload_task_failed call_id=%s task=%s",
+                    self.context.call_id,
+                    done_task.get_name(),
+                )
+
+        task.add_done_callback(_on_done)
+        return task
+
+    async def _upload_turn_audio(self, turn_index: int, audio_bytes: bytes) -> None:
+        if self.audio_storage is None or not audio_bytes:
+            return
+
+        call_id = self.context.call_id.strip() or self.session_id
+        wav_bytes = pcm16_bytes_to_wav(audio_bytes, self.config.stt_sample_rate)
+        key = await self.audio_storage.upload_turn_audio(
+            call_id=call_id,
+            turn_index=turn_index,
+            wav_bytes=wav_bytes,
+        )
+        await self.transcript_store.set_turn_audio_key(
+            self.session_id,
+            turn_index=turn_index,
+            audio_key=key,
+        )
+        logger.info(
+            "turn_audio_uploaded call_id=%s turn=%s audio_key=%s bytes=%s",
+            self.context.call_id,
+            turn_index,
+            key,
+            len(wav_bytes),
         )
 
     def _track_task(self, task: asyncio.Task[None]) -> asyncio.Task[None]:

@@ -13,6 +13,7 @@ import uvicorn
 from clients import LlmHttpClient, SttWsClient, TtsHttpClient
 from config import OrchestratorConfig
 from session import CallSession
+from storage import S3AudioStorage
 from transcript_store import TranscriptStore
 
 
@@ -27,8 +28,15 @@ logger = logging.getLogger("molla.orchestrator")
 async def lifespan(app: FastAPI):
     app.state.config = OrchestratorConfig.from_env()
     app.state.transcript_store = TranscriptStore(app.state.config.transcript_dir)
+    app.state.audio_storage = None
+    if app.state.config.s3_audio_bucket:
+        app.state.audio_storage = S3AudioStorage(
+            bucket=app.state.config.s3_audio_bucket,
+            region=app.state.config.aws_region,
+            prefix=app.state.config.s3_audio_prefix,
+        )
     logger.info(
-        "orchestrator_started host=%s port=%s public_base_url=%s transcript_dir=%s stt_ws_url=%s llm_http_url=%s tts_http_url=%s backend_session_start_url=%s backend_session_end_url_template=%s",
+        "orchestrator_started host=%s port=%s public_base_url=%s transcript_dir=%s stt_ws_url=%s llm_http_url=%s tts_http_url=%s backend_session_start_url=%s backend_session_end_url_template=%s s3_audio_bucket=%s s3_audio_prefix=%s aws_region=%s",
         app.state.config.host,
         app.state.config.port,
         app.state.config.public_base_url,
@@ -38,6 +46,9 @@ async def lifespan(app: FastAPI):
         app.state.config.tts_http_url,
         app.state.config.backend_session_start_url,
         app.state.config.backend_session_end_url_template,
+        app.state.config.s3_audio_bucket,
+        app.state.config.s3_audio_prefix,
+        app.state.config.aws_region,
     )
     yield
 
@@ -112,6 +123,7 @@ async def _run_orchestrator_session(websocket: WebSocket) -> None:
         llm_client=LlmHttpClient(config.llm_http_url),
         tts_client=TtsHttpClient(config.tts_http_url),
         transcript_store=websocket.app.state.transcript_store,
+        audio_storage=websocket.app.state.audio_storage,
     )
     await session.open()
 
