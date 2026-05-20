@@ -9,6 +9,9 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     ORCH_LLM_HTTP_URL=http://internal-molla-llm-lb-563483486.ap-northeast-2.elb.amazonaws.com \
     ORCH_TTS_HTTP_URL=http://172.31.33.2:8002 \
     ORCH_PUBLIC_BASE_URL=https://orch.mollatalk.com
+    AWS_REGION=ap-northeast-2
+    ORCH_S3_AUDIO_BUCKET=molla-call-audio-prod
+    ORCH_S3_AUDIO_PREFIX=calls
 
 WORKDIR /app
 
