@@ -70,9 +70,10 @@ export ORCH_PUBLIC_BASE_URL="https://orchestrator.example.com"
 
 ## 세션 종료 업로드
 
-세션 종료 시 backend end API payload에는 기존 `transcript`와 함께 `utterances` 배열이 포함됩니다.
+세션 종료 시 backend end API payload에는 `turns` 배열이 포함됩니다.
 
-- 각 utterance는 STT `final` 1건에 대응합니다
-- `text`는 LLM 요청 직전에 사용한 최종 사용자 발화입니다
-- 각 utterance는 `text`, `audio`, `sampleRate`, `encoding` 네 필드만 포함합니다
-- `audio`는 해당 발화 직전까지 누적한 16kHz `pcm16le/base64` 오디오입니다
+- 각 turn은 하나의 사용자 발화와 그에 대한 assistant 응답을 함께 담습니다
+- `turn.user.text`와 `turn.user.audio`는 같은 conversation turn에서 함께 저장됩니다
+- `turn.user`는 `text`, `audio`, `sampleRate`, `encoding` 네 필드를 포함합니다
+- `turn.user.audio`는 해당 발화 직전까지 누적한 16kHz `pcm16le/base64` 오디오입니다
+- `turn.assistant`는 응답이 존재할 때 `text`와 `createdAt` 필드를 포함합니다

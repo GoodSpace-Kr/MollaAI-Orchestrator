@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import base64
 import logging
 import re
 import time
@@ -23,7 +22,7 @@ from audio import (
 )
 from clients import LlmHttpClient, SttWsClient, TtsHttpClient
 from config import OrchestratorConfig
-from transcript_store import TranscriptStore
+from transcript_store import ConversationTurn, TranscriptStore
 
 
 SENTENCE_END_RE = re.compile(r"(.+?[.!?]+(?:\s+|$))", re.DOTALL)
@@ -45,21 +44,6 @@ class SentenceSynthesis:
     text: str
     frame_queue: asyncio.Queue[bytes | None]
     task: asyncio.Task[None]
-
-
-@dataclass(slots=True)
-class UserUtterance:
-    text: str
-    sample_rate: int
-    pcm16_audio: bytes
-
-    def to_payload(self) -> dict[str, Any]:
-        return {
-            "text": self.text,
-            "sampleRate": self.sample_rate,
-            "encoding": "pcm16le/base64",
-            "audio": base64.b64encode(self.pcm16_audio).decode("ascii"),
-        }
 
 
 class CallSession:
@@ -91,7 +75,6 @@ class CallSession:
         self._stt_task: asyncio.Task[None] | None = None
         self._response_tasks: set[asyncio.Task[None]] = set()
         self._pending_user_audio = bytearray()
-        self._utterances: list[UserUtterance] = []
 
     async def open(self) -> None:
         await self.stt_client.connect()
@@ -180,30 +163,23 @@ class CallSession:
             if not text:
                 continue
 
-            self._store_final_utterance(text)
+            turn = await self._store_conversation_turn(text)
 
             task = self._track_task(
-                asyncio.create_task(self._run_response_pipeline(text), name=f"response:{self.context.call_id}")
+                asyncio.create_task(self._run_response_pipeline(turn), name=f"response:{self.context.call_id}")
             )
             self._response_tasks.add(task)
 
-    async def _run_response_pipeline(self, transcript: str) -> None:
+    async def _run_response_pipeline(self, turn: ConversationTurn) -> None:
         async with self.response_lock:
             self.turn_index += 1
-            turn_index = self.turn_index
+            llm_turn_index = self.turn_index
             llm_started_at = time.perf_counter()
             logger.info(
                 "llm_request call_id=%s turn=%s transcript=%r",
                 self.context.call_id,
-                turn_index,
-                transcript[:200],
-            )
-            await self.transcript_store.append_event(
-                self.session_id,
-                source="llm",
-                kind="request",
-                text=transcript,
-                turn=turn_index,
+                llm_turn_index,
+                turn.user_text[:200],
             )
             self.sentence_buffer = ""
             token_started = False
@@ -213,13 +189,13 @@ class CallSession:
             response_chunks: list[str] = []
 
             try:
-                async for token in self.llm_client.stream_tokens(transcript):
+                async for token in self.llm_client.stream_tokens(turn.user_text):
                     token_count += 1
                     if not token_started:
                         logger.info(
                             "llm_first_token call_id=%s turn=%s latency_ms=%s token=%r",
                             self.context.call_id,
-                            turn_index,
+                            llm_turn_index,
                             int((time.perf_counter() - llm_started_at) * 1000),
                             token[:80],
                         )
@@ -234,7 +210,7 @@ class CallSession:
                         logger.info(
                             "llm_first_sentence call_id=%s turn=%s latency_ms=%s sentence=%r",
                             self.context.call_id,
-                            turn_index,
+                            llm_turn_index,
                             int((time.perf_counter() - llm_started_at) * 1000),
                             ready_sentences[0][:120],
                         )
@@ -244,19 +220,18 @@ class CallSession:
                     logger.warning(
                         "llm_empty_response call_id=%s turn=%s elapsed_ms=%s",
                         self.context.call_id,
-                        turn_index,
+                        llm_turn_index,
                         int((time.perf_counter() - llm_started_at) * 1000),
                     )
                     return
 
                 response_text = "".join(response_chunks).strip()
                 if response_text:
-                    await self.transcript_store.append_event(
+                    await self.transcript_store.set_assistant_response(
                         self.session_id,
-                        source="llm",
-                        kind="response",
+                        turn_index=turn.index,
                         text=response_text,
-                        turn=turn_index,
+                        llm_turn=llm_turn_index,
                     )
 
                 tail = self._flush_sentence_buffer()
@@ -266,7 +241,7 @@ class CallSession:
                         logger.info(
                             "llm_first_sentence call_id=%s turn=%s latency_ms=%s sentence=%r",
                             self.context.call_id,
-                            turn_index,
+                            llm_turn_index,
                             int((time.perf_counter() - llm_started_at) * 1000),
                             tail[:120],
                         )
@@ -275,7 +250,7 @@ class CallSession:
                 logger.info(
                     "llm_stream_done call_id=%s turn=%s elapsed_ms=%s tokens=%s chars=%s sentences=%s",
                     self.context.call_id,
-                    turn_index,
+                    llm_turn_index,
                     int((time.perf_counter() - llm_started_at) * 1000),
                     token_count,
                     len(response_text),
@@ -297,7 +272,7 @@ class CallSession:
                 logger.exception(
                     "llm_pipeline_failed call_id=%s turn=%s elapsed_ms=%s tokens=%s",
                     self.context.call_id,
-                    turn_index,
+                    llm_turn_index,
                     int((time.perf_counter() - llm_started_at) * 1000),
                     token_count,
                 )
@@ -379,28 +354,27 @@ class CallSession:
         if session is None:
             return
 
-        transcript_text = self.transcript_store.render_transcript_text(session)
-        if not transcript_text:
+        payload = self.transcript_store.build_completed_payload(session)
+        if not payload["turns"]:
             logger.info("transcript_upload_skipped session_id=%s reason=empty", self.session_id)
             return
 
-        payload = {
+        request_payload = {
             "status": "completed",
-            "transcript": transcript_text,
-            "utterances": [utterance.to_payload() for utterance in self._utterances],
+            **payload,
         }
         end_url = self.config.backend_session_end_url_template.format(session_id=self.backend_session_id)
 
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
-                response = await client.patch(end_url, json=payload)
+                response = await client.patch(end_url, json=request_payload)
                 response.raise_for_status()
             logger.info(
-                "transcript_uploaded session_id=%s backend_session_id=%s url=%s chars=%s",
+                "transcript_uploaded session_id=%s backend_session_id=%s url=%s turns=%s",
                 self.session_id,
                 self.backend_session_id,
                 end_url,
-                len(transcript_text),
+                len(payload["turns"]),
             )
         except Exception:
             logger.exception(
@@ -413,24 +387,22 @@ class CallSession:
     def _normalize_phone_number(self, value: str) -> str:
         return re.sub(r"[-\s]", "", value).strip()
 
-    def _store_final_utterance(self, text: str) -> None:
+    async def _store_conversation_turn(self, text: str) -> ConversationTurn:
         cleaned = text.strip()
         if not cleaned:
             self._pending_user_audio.clear()
-            return
+            raise ValueError("Conversation turn text must not be empty.")
 
         audio_bytes = bytes(self._pending_user_audio)
         self._pending_user_audio.clear()
         if not audio_bytes:
-            logger.info("utterance_capture_skipped session_id=%s reason=empty_audio", self.session_id)
-            return
+            logger.warning("conversation_turn_empty_audio session_id=%s text=%r", self.session_id, cleaned[:120])
 
-        self._utterances.append(
-            UserUtterance(
-                text=cleaned,
-                sample_rate=self.config.stt_sample_rate,
-                pcm16_audio=audio_bytes,
-            )
+        return await self.transcript_store.append_turn(
+            self.session_id,
+            user_text=cleaned,
+            user_audio=audio_bytes,
+            sample_rate=self.config.stt_sample_rate,
         )
 
     def _track_task(self, task: asyncio.Task[None]) -> asyncio.Task[None]:

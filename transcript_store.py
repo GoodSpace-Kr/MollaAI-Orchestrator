@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 from copy import deepcopy
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from pathlib import Path
 import json
+from pathlib import Path
 import re
 from typing import Any
 
@@ -20,12 +21,61 @@ def _safe_session_id(session_id: str) -> str:
 
 
 @dataclass(slots=True)
+class ConversationTurn:
+    index: int
+    created_at: str
+    user_text: str
+    user_audio: str
+    sample_rate: int
+    encoding: str = "pcm16le/base64"
+    assistant_text: str = ""
+    assistant_created_at: str | None = None
+    llm_turn: int | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "index": self.index,
+            "created_at": self.created_at,
+            "user_text": self.user_text,
+            "user_audio": self.user_audio,
+            "sample_rate": self.sample_rate,
+            "encoding": self.encoding,
+            "assistant_text": self.assistant_text,
+            "assistant_created_at": self.assistant_created_at,
+            "llm_turn": self.llm_turn,
+        }
+
+    def utterance_payload(self) -> dict[str, Any]:
+        return {
+            "text": self.user_text,
+            "sampleRate": self.sample_rate,
+            "encoding": self.encoding,
+            "audio": self.user_audio,
+        }
+
+    def payload(self) -> dict[str, Any]:
+        data = {
+            "index": self.index,
+            "createdAt": self.created_at,
+            "user": self.utterance_payload(),
+        }
+        if self.assistant_text.strip():
+            assistant = {
+                "text": self.assistant_text,
+            }
+            if self.assistant_created_at:
+                assistant["createdAt"] = self.assistant_created_at
+            data["assistant"] = assistant
+        return data
+
+
+@dataclass(slots=True)
 class TranscriptSession:
     session_id: str
     metadata: dict[str, Any] = field(default_factory=dict)
     started_at: str = field(default_factory=_utc_now)
     ended_at: str | None = None
-    entries: list[dict[str, Any]] = field(default_factory=list)
+    turns: list[ConversationTurn] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -33,7 +83,7 @@ class TranscriptSession:
             "started_at": self.started_at,
             "ended_at": self.ended_at,
             "metadata": deepcopy(self.metadata),
-            "entries": deepcopy(self.entries),
+            "turns": [turn.to_dict() for turn in self.turns],
         }
 
 
@@ -56,14 +106,42 @@ class TranscriptStore:
                 session.ended_at = None
             self._persist_session(session)
 
-    async def append_event(
+    async def append_turn(
         self,
         session_id: str,
         *,
-        source: str,
-        kind: str,
+        user_text: str,
+        user_audio: bytes,
+        sample_rate: int,
+    ) -> ConversationTurn:
+        cleaned = user_text.strip()
+        if not cleaned:
+            raise ValueError("Conversation turn text must not be empty.")
+
+        async with self._lock:
+            session = self._sessions.get(session_id)
+            if session is None:
+                session = self._load_session(session_id) or TranscriptSession(session_id=session_id)
+                self._sessions[session_id] = session
+
+            turn = ConversationTurn(
+                index=len(session.turns) + 1,
+                created_at=_utc_now(),
+                user_text=cleaned,
+                user_audio=base64.b64encode(user_audio).decode("ascii"),
+                sample_rate=sample_rate,
+            )
+            session.turns.append(turn)
+            self._persist_session(session)
+            return turn
+
+    async def set_assistant_response(
+        self,
+        session_id: str,
+        *,
+        turn_index: int,
         text: str,
-        **extra: Any,
+        llm_turn: int | None = None,
     ) -> None:
         cleaned = text.strip()
         if not cleaned:
@@ -72,19 +150,21 @@ class TranscriptStore:
         async with self._lock:
             session = self._sessions.get(session_id)
             if session is None:
-                session = self._load_session(session_id) or TranscriptSession(session_id=session_id)
+                session = self._load_session(session_id)
+                if session is None:
+                    return
                 self._sessions[session_id] = session
 
-            entry = {
-                "index": len(session.entries) + 1,
-                "created_at": _utc_now(),
-                "source": source,
-                "kind": kind,
-                "text": cleaned,
-            }
-            entry.update({key: value for key, value in extra.items() if value is not None})
-            session.entries.append(entry)
-            self._persist_session(session)
+            for turn in session.turns:
+                if turn.index != turn_index:
+                    continue
+                turn.assistant_text = cleaned
+                turn.assistant_created_at = _utc_now()
+                turn.llm_turn = llm_turn
+                self._persist_session(session)
+                return
+
+            raise ValueError(f"Conversation turn {turn_index} not found for session {session_id}.")
 
     async def end_session(self, session_id: str) -> None:
         async with self._lock:
@@ -130,30 +210,26 @@ class TranscriptStore:
                     "session_id": session.session_id,
                     "started_at": session.started_at,
                     "ended_at": session.ended_at,
-                    "entry_count": len(session.entries),
+                    "entry_count": len(session.turns),
+                    "turn_count": len(session.turns),
                     "metadata": deepcopy(session.metadata),
                 }
                 for session in sessions[:limit]
             ]
 
+    def build_completed_payload(self, session: dict[str, Any]) -> dict[str, Any]:
+        turns = [self._turn_from_dict(item) for item in session.get("turns", [])]
+        return {
+            "turns": [turn.payload() for turn in turns],
+        }
+
     def render_transcript_text(self, session: dict[str, Any]) -> str:
         lines: list[str] = []
-        for entry in session.get("entries", []):
-            text = str(entry.get("text", "")).strip()
-            if not text:
-                continue
-
-            source = str(entry.get("source", "")).strip().lower()
-            kind = str(entry.get("kind", "")).strip().lower()
-            if source == "llm" and kind == "request":
-                speaker = "User"
-            elif source == "llm" and kind == "response":
-                speaker = "Assistant"
-            else:
-                speaker = source or "Unknown"
-
-            lines.append(f"{speaker}: {text}")
-
+        for turn_data in session.get("turns", []):
+            turn = self._turn_from_dict(turn_data)
+            lines.append(f"User: {turn.user_text}")
+            if turn.assistant_text.strip():
+                lines.append(f"Assistant: {turn.assistant_text.strip()}")
         return "\n".join(lines)
 
     def _session_path(self, session_id: str) -> Path:
@@ -176,5 +252,64 @@ class TranscriptStore:
             started_at=str(data.get("started_at", _utc_now())),
             ended_at=data.get("ended_at"),
             metadata=dict(data.get("metadata", {}) or {}),
-            entries=list(data.get("entries", []) or []),
+            turns=self._load_turns(data),
         )
+
+    def _turn_from_dict(self, data: dict[str, Any]) -> ConversationTurn:
+        return ConversationTurn(
+            index=int(data.get("index", 0) or 0),
+            created_at=str(data.get("created_at", _utc_now())),
+            user_text=str(data.get("user_text", "")).strip(),
+            user_audio=str(data.get("user_audio", "")),
+            sample_rate=int(data.get("sample_rate", 0) or 0),
+            encoding=str(data.get("encoding", "pcm16le/base64")),
+            assistant_text=str(data.get("assistant_text", "")).strip(),
+            assistant_created_at=data.get("assistant_created_at"),
+            llm_turn=int(data["llm_turn"]) if data.get("llm_turn") is not None else None,
+        )
+
+    def _load_turns(self, data: dict[str, Any]) -> list[ConversationTurn]:
+        if "turns" in data:
+            return [self._turn_from_dict(item) for item in data.get("turns", [])]
+
+        turns: list[ConversationTurn] = []
+        pending_user: dict[str, Any] | None = None
+        for entry in data.get("entries", []):
+            source = str(entry.get("source", "")).strip().lower()
+            kind = str(entry.get("kind", "")).strip().lower()
+            text = str(entry.get("text", "")).strip()
+            if not text:
+                continue
+
+            if source == "llm" and kind == "request":
+                pending_user = entry
+                continue
+
+            if source == "llm" and kind == "response" and pending_user is not None:
+                turns.append(
+                    ConversationTurn(
+                        index=len(turns) + 1,
+                        created_at=str(pending_user.get("created_at", _utc_now())),
+                        user_text=str(pending_user.get("text", "")).strip(),
+                        user_audio="",
+                        sample_rate=0,
+                        assistant_text=text,
+                        assistant_created_at=str(entry.get("created_at", _utc_now())),
+                        llm_turn=entry.get("turn"),
+                    )
+                )
+                pending_user = None
+
+        if pending_user is not None:
+            turns.append(
+                ConversationTurn(
+                    index=len(turns) + 1,
+                    created_at=str(pending_user.get("created_at", _utc_now())),
+                    user_text=str(pending_user.get("text", "")).strip(),
+                    user_audio="",
+                    sample_rate=0,
+                    llm_turn=pending_user.get("turn"),
+                )
+            )
+
+        return turns
