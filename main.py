@@ -58,10 +58,10 @@ app = FastAPI(title="Molla Orchestrator", lifespan=lifespan)
 
 
 class EmbeddedPointPayload(BaseModel):
-    userId: str
+    userId: str | None = None
     phoneNumber: str
     userText: str
-    assistantText: str
+    assistantText: str | None = None
     createdAt: str
     audioKey: str | None = None
 
