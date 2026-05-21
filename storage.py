@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from typing import Any
 
 
@@ -38,5 +39,13 @@ class S3AudioStorage:
         if self._client is None:
             import boto3
 
-            self._client = boto3.client("s3", region_name=self.region)
+            access_key = os.getenv("AWS_S3_ACCESS_KEY")
+            secret_key = os.getenv("AWS_S3_SECRET_KEY")
+            client_kwargs: dict[str, Any] = {
+                "region_name": self.region,
+            }
+            if access_key and secret_key:
+                client_kwargs["aws_access_key_id"] = access_key
+                client_kwargs["aws_secret_access_key"] = secret_key
+            self._client = boto3.client("s3", **client_kwargs)
         return self._client
