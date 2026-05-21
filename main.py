@@ -8,6 +8,7 @@ from urllib.parse import urlsplit, urlunsplit
 from xml.sax.saxutils import escape
 
 from fastapi import FastAPI, HTTPException, Request, Response, WebSocket, WebSocketDisconnect
+from pydantic import BaseModel, Field
 import uvicorn
 
 from clients import LlmHttpClient, SttWsClient, TtsHttpClient
@@ -56,9 +57,45 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="Molla Orchestrator", lifespan=lifespan)
 
 
+class EmbeddedPointPayload(BaseModel):
+    userId: str
+    phoneNumber: str
+    userText: str
+    assistantText: str
+    createdAt: str
+    audioKey: str | None = None
+
+
+class EmbeddedPoint(BaseModel):
+    id: str
+    vector: list[float] = Field(min_length=1)
+    payload: EmbeddedPointPayload
+
+
+class EmbeddedPointsRequest(BaseModel):
+    points: list[EmbeddedPoint] = Field(min_length=1)
+
+
 @app.get("/healthz")
 def healthcheck() -> dict[str, str]:
     return {"status": "ok"}
+
+
+@app.post("/memory/points")
+async def ingest_memory_points(payload: EmbeddedPointsRequest, request: Request) -> dict[str, Any]:
+    config: OrchestratorConfig = request.app.state.config
+    llm_client = LlmHttpClient(config.llm_http_url)
+    try:
+        response = await llm_client.upsert_memory_points(payload.model_dump(mode="python"))
+        logger.info("memory_points_forwarded count=%s llm_http_url=%s", len(payload.points), config.llm_http_url)
+        return response
+    except httpx.HTTPStatusError as exc:
+        detail = exc.response.text.strip() or str(exc)
+        raise HTTPException(status_code=502, detail=f"LLM memory upsert failed: {detail}") from exc
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=502, detail=f"LLM memory upsert failed: {exc}") from exc
+    finally:
+        await llm_client.close()
 
 
 @app.get("/transcripts")

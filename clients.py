@@ -72,6 +72,11 @@ class LlmHttpClient:
                 if isinstance(token, str) and token:
                     yield token
 
+    async def upsert_memory_points(self, payload: dict) -> dict:
+        response = await self._client.post("/memory/points", json=payload)
+        response.raise_for_status()
+        return response.json()
+
     async def close(self) -> None:
         await self._client.aclose()
 
