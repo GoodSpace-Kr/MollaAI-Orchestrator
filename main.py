@@ -8,6 +8,7 @@ from urllib.parse import urlsplit, urlunsplit
 from xml.sax.saxutils import escape
 
 from fastapi import FastAPI, HTTPException, Request, Response, WebSocket, WebSocketDisconnect
+import httpx
 from pydantic import BaseModel, Field
 import uvicorn
 
