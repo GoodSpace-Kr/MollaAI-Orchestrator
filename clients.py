@@ -57,8 +57,21 @@ class LlmHttpClient:
     def __init__(self, base_url: str) -> None:
         self._client = httpx.AsyncClient(base_url=base_url, timeout=None)
 
-    async def stream_tokens(self, query: str) -> AsyncIterator[str]:
-        async with self._client.stream("POST", "/chat/tokens", json={"query": query}) as response:
+    async def stream_tokens(
+        self,
+        query: str,
+        *,
+        user_id: str,
+        conversation_id: str,
+        history: list[dict[str, str]] | None = None,
+    ) -> AsyncIterator[str]:
+        payload = {
+            "query": query,
+            "user_id": user_id,
+            "conversation_id": conversation_id,
+            "history": history or [],
+        }
+        async with self._client.stream("POST", "/chat/tokens", json=payload) as response:
             response.raise_for_status()
             async for line in response.aiter_lines():
                 stripped = line.strip()

@@ -68,10 +68,21 @@ export ORCH_PUBLIC_BASE_URL="https://orchestrator.example.com"
 - `ORCH_TTS_VOICE`
 - `ORCH_TTS_LANG_CODE`
 
+## 시작 payload
+
+ClawOps `start` 이벤트 payload에 `remainingMinutes` 정수를 포함하면 오케스트레이터가 통화 잔여시간을 분 단위로 추적합니다.
+
+- `start.remainingMinutes`가 없으면 자동 종료 타이머를 걸지 않습니다
+- `start.remainingMinutes`가 `0`이면 시작 직후 종료 안내 음성을 재생하고 통화를 닫습니다
+- 잔여시간이 만료되면 새 사용자 오디오는 더 이상 STT로 전달하지 않습니다
+- 만료 시 `"오늘 잔여시간이 모두 소진되었습니다. 통화가 자동으로 종료됩니다. 감사합니다."` 안내 음성을 송출한 뒤 websocket을 종료합니다
+
 ## 세션 종료 업로드
 
-세션 종료 시 backend end API payload에는 `turns` 배열이 포함됩니다.
+세션 종료 시 backend end API payload에는 `startedAt`, `endedAt`, `durationMinutes`, `turns`가 포함됩니다.
 
+- `startedAt`과 `endedAt`은 오케스트레이터가 추적한 통화 세션 시작/종료 시각입니다
+- `durationMinutes`는 `endedAt - startedAt` 기준의 총 통화 시간을 분 단위로 내림 계산한 값입니다
 - 각 turn은 하나의 사용자 발화와 그에 대한 assistant 응답을 함께 담습니다
 - `turn.user.text`와 `turn.user.audio`는 같은 conversation turn에서 함께 저장됩니다
 - `turn.user`는 `text`, `audio`, `sampleRate`, `encoding` 네 필드를 포함합니다

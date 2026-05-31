@@ -14,6 +14,15 @@ def _utc_now() -> str:
     return datetime.now(UTC).isoformat()
 
 
+def _parse_iso_datetime(value: Any) -> datetime | None:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        return datetime.fromisoformat(value)
+    except ValueError:
+        return None
+
+
 def _safe_session_id(session_id: str) -> str:
     cleaned = re.sub(r"[^A-Za-z0-9._-]+", "_", session_id).strip("._")
     return cleaned or "call-session"
@@ -244,9 +253,16 @@ class TranscriptStore:
 
     def build_completed_payload(self, session: dict[str, Any]) -> dict[str, Any]:
         turns = [self._turn_from_dict(item) for item in session.get("turns", [])]
-        return {
+        payload = {
+            "startedAt": str(session.get("started_at", "")).strip(),
+            "endedAt": str(session.get("ended_at", "")).strip() or None,
             "turns": [turn.payload() for turn in turns],
         }
+        started_at = _parse_iso_datetime(session.get("started_at"))
+        ended_at = _parse_iso_datetime(session.get("ended_at"))
+        if started_at is not None and ended_at is not None:
+            payload["durationMinutes"] = max(0, int((ended_at - started_at).total_seconds() // 60))
+        return payload
 
     def render_transcript_text(self, session: dict[str, Any]) -> str:
         lines: list[str] = []

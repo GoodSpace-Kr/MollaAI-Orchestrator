@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+from collections import deque
+from difflib import SequenceMatcher
 import logging
 import re
 import time
@@ -29,6 +31,7 @@ from transcript_store import ConversationTurn, TranscriptStore
 
 SENTENCE_END_RE = re.compile(r"(.+?[.!?]+(?:\s+|$))", re.DOTALL)
 GREETING_TEXT = "Hi. this is MollaAI English. welcome to here !"
+TIMEOUT_NOTICE_TEXT = "오늘 잔여시간이 모두 소진되었습니다. 통화가 자동으로 종료됩니다. 감사합니다."
 logger = logging.getLogger("molla.orchestrator")
 
 
@@ -49,6 +52,8 @@ class SentenceSynthesis:
 
 
 class CallSession:
+    HISTORY_TURN_LIMIT = 5
+
     def __init__(
         self,
         *,
@@ -76,16 +81,25 @@ class CallSession:
         self.session_id = "call-session"
         self.backend_session_id = ""
         self.turn_index = 0
+        self._remaining_minutes: int | None = None
+        self._timeout_task: asyncio.Task[None] | None = None
+        self._accepting_user_audio = True
+        self._timeout_notice_sent = False
         self._stt_task: asyncio.Task[None] | None = None
         self._response_tasks: set[asyncio.Task[None]] = set()
         self._audio_upload_tasks: set[asyncio.Task[None]] = set()
         self._pending_user_audio = bytearray()
+        self._last_completed_response_turn_index = 0
+        self._assistant_echo_texts: deque[tuple[float, str]] = deque(maxlen=24)
 
     async def open(self) -> None:
         await self.stt_client.connect()
 
     async def start(self, payload: dict[str, Any]) -> None:
         start = payload.get("start", {})
+        self._remaining_minutes = self._coerce_remaining_minutes(start.get("remainingMinutes"))
+        self._accepting_user_audio = True
+        self._timeout_notice_sent = False
         self.context = CallContext(
             stream_id=str(start.get("streamId", "")),
             call_id=str(start.get("callId", "")),
@@ -99,6 +113,7 @@ class CallSession:
                 "call_id": self.context.call_id,
                 "stream_id": self.context.stream_id,
                 "user_id": self.context.user_id,
+                "remaining_minutes": self._remaining_minutes,
                 "custom_parameters": dict(self.context.custom_parameters),
             },
         )
@@ -110,8 +125,11 @@ class CallSession:
 
         await self.stt_client.start(session_id=self.session_id, sample_rate=self.config.stt_sample_rate)
         self._stt_task = asyncio.create_task(self._consume_stt_events(), name=f"stt-events:{self.session_id}")
+        self._schedule_timeout_task()
 
     async def handle_media(self, payload: dict[str, Any]) -> None:
+        if self.closed or not self._accepting_user_audio:
+            return
         media = payload.get("media", {})
         encoded = media.get("payload")
         if not isinstance(encoded, str):
@@ -129,6 +147,8 @@ class CallSession:
         if self.closed:
             return
         self.closed = True
+        self._accepting_user_audio = False
+        self._cancel_timeout_task()
 
         if self._stt_task is not None:
             self._stt_task.cancel()
@@ -171,10 +191,21 @@ class CallSession:
             if event_type != "final":
                 continue
 
+            if not self._accepting_user_audio or self.closed:
+                continue
             if not text:
+                continue
+            if self._is_likely_assistant_echo(text):
+                logger.info(
+                    "stt_echo_ignored call_id=%s text=%r",
+                    self.context.call_id,
+                    text[:200],
+                )
                 continue
 
             turn = await self._store_conversation_turn(text)
+            if self._has_active_response():
+                await self._interrupt_active_responses(turn)
 
             task = self._track_task(
                 asyncio.create_task(self._run_response_pipeline(turn), name=f"response:{self.context.call_id}")
@@ -186,12 +217,6 @@ class CallSession:
             self.turn_index += 1
             llm_turn_index = self.turn_index
             llm_started_at = time.perf_counter()
-            logger.info(
-                "llm_request call_id=%s turn=%s transcript=%r",
-                self.context.call_id,
-                llm_turn_index,
-                turn.user_text[:200],
-            )
             self.sentence_buffer = ""
             token_started = False
             first_sentence_logged = False
@@ -200,7 +225,21 @@ class CallSession:
             response_chunks: list[str] = []
 
             try:
-                async for token in self.llm_client.stream_tokens(turn.user_text):
+                user_query, history_before_turn_index = await self._pending_user_query(turn)
+                history = await self._recent_llm_history(history_before_turn_index)
+                logger.info(
+                    "llm_request call_id=%s turn=%s transcript=%r history_before_turn=%s",
+                    self.context.call_id,
+                    llm_turn_index,
+                    user_query[:300],
+                    history_before_turn_index,
+                )
+                async for token in self.llm_client.stream_tokens(
+                    user_query,
+                    user_id=self.context.user_id or self.context.call_id or self.session_id,
+                    conversation_id=self.session_id,
+                    history=history,
+                ):
                     token_count += 1
                     if not token_started:
                         logger.info(
@@ -270,6 +309,10 @@ class CallSession:
 
                 if sentences:
                     await self._play_sentence_batch(sentences)
+                self._last_completed_response_turn_index = max(
+                    self._last_completed_response_turn_index,
+                    turn.index,
+                )
             except asyncio.CancelledError:
                 for sentence in sentences:
                     sentence.task.cancel()
@@ -291,10 +334,128 @@ class CallSession:
 
     async def _play_greeting(self) -> None:
         async with self.response_lock:
-            sentences: list[SentenceSynthesis] = []
-            self._enqueue_sentence_tasks([GREETING_TEXT], sentences)
-            if sentences:
-                await self._play_sentence_batch(sentences)
+            await self._play_system_message(GREETING_TEXT)
+
+    async def _play_system_message(self, text: str) -> None:
+        sentences: list[SentenceSynthesis] = []
+        self._enqueue_sentence_tasks([text], sentences)
+        if sentences:
+            await self._play_sentence_batch(sentences)
+
+    def _has_active_response(self) -> bool:
+        return any(not task.done() for task in self._response_tasks)
+
+    async def _interrupt_active_responses(self, turn: ConversationTurn) -> None:
+        tasks = [task for task in list(self._response_tasks) if not task.done()]
+        if not tasks:
+            return
+        logger.info(
+            "barge_in_detected call_id=%s turn=%s transcript=%r active_tasks=%s",
+            self.context.call_id,
+            turn.index,
+            turn.user_text[:200],
+            len(tasks),
+        )
+        for task in tasks:
+            task.cancel()
+        done, pending = await asyncio.wait(tasks, timeout=1.0)
+        for task in done:
+            try:
+                task.result()
+            except asyncio.CancelledError:
+                pass
+        if pending:
+            logger.warning(
+                "barge_in_cancel_timeout call_id=%s pending_tasks=%s",
+                self.context.call_id,
+                len(pending),
+            )
+
+    async def _pending_user_query(self, current_turn: ConversationTurn) -> tuple[str, int]:
+        session = await self.transcript_store.get_session(self.session_id)
+        if session is None:
+            return current_turn.user_text, current_turn.index
+
+        pending_turns: list[dict[str, Any]] = []
+        for raw_turn in session.get("turns", []):
+            try:
+                turn_index = int(raw_turn.get("index", 0))
+            except (TypeError, ValueError):
+                continue
+            if turn_index <= self._last_completed_response_turn_index:
+                continue
+            if turn_index > current_turn.index:
+                continue
+            user_text = str(raw_turn.get("user_text", "")).strip()
+            if not user_text:
+                continue
+            pending_turns.append({"index": turn_index, "user_text": user_text})
+
+        if not pending_turns:
+            return current_turn.user_text, current_turn.index
+
+        combined_query = "\n".join(str(turn["user_text"]) for turn in pending_turns).strip()
+        first_pending_index = int(pending_turns[0]["index"])
+        if len(pending_turns) > 1:
+            logger.info(
+                "barge_in_query_combined call_id=%s from_turn=%s to_turn=%s parts=%s text=%r",
+                self.context.call_id,
+                first_pending_index,
+                current_turn.index,
+                len(pending_turns),
+                combined_query[:300],
+            )
+        return combined_query or current_turn.user_text, first_pending_index
+
+    def _coerce_remaining_minutes(self, value: Any) -> int | None:
+        if value is None:
+            return None
+        try:
+            minutes = int(value)
+        except (TypeError, ValueError):
+            return None
+        return max(0, minutes)
+
+    def _schedule_timeout_task(self) -> None:
+        self._cancel_timeout_task()
+        if self._remaining_minutes is None:
+            return
+        timeout_seconds = self._remaining_minutes * 60
+        self._timeout_task = asyncio.create_task(
+            self._run_timeout_after_delay(timeout_seconds),
+            name=f"timeout:{self.session_id}",
+        )
+
+    def _cancel_timeout_task(self) -> None:
+        if self._timeout_task is None:
+            return
+        self._timeout_task.cancel()
+        self._timeout_task = None
+
+    async def _run_timeout_after_delay(self, timeout_seconds: int) -> None:
+        try:
+            await asyncio.sleep(max(0, timeout_seconds))
+            await self._handle_remaining_minutes_expired()
+        except asyncio.CancelledError:
+            raise
+
+    async def _handle_remaining_minutes_expired(self) -> None:
+        if self.closed or self._timeout_notice_sent:
+            return
+        self._accepting_user_audio = False
+        self._timeout_notice_sent = True
+        logger.info(
+            "session_remaining_time_exhausted session_id=%s remaining_minutes=%s",
+            self.session_id,
+            self._remaining_minutes,
+        )
+        async with self.response_lock:
+            if self.closed:
+                return
+            await self._play_system_message(TIMEOUT_NOTICE_TEXT)
+        if self.closed:
+            return
+        await self.websocket.close()
 
     async def _send_session_started(self) -> None:
         if not self.config.backend_session_start_url:
@@ -465,6 +626,34 @@ class CallSession:
             len(wav_bytes),
         )
 
+    async def _recent_llm_history(self, current_turn_index: int) -> list[dict[str, str]]:
+        session = await self.transcript_store.get_session(self.session_id)
+        if session is None:
+            return []
+
+        raw_turns = session.get("turns", [])
+        prior_turns: list[dict[str, Any]] = []
+        for raw_turn in raw_turns:
+            try:
+                turn_index = int(raw_turn.get("index", 0))
+            except (TypeError, ValueError):
+                continue
+            if turn_index >= current_turn_index:
+                continue
+            prior_turns.append(raw_turn)
+
+        history: list[dict[str, str]] = []
+        for raw_turn in prior_turns[-self.HISTORY_TURN_LIMIT :]:
+            user_text = str(raw_turn.get("user_text", "")).strip()
+            if user_text:
+                history.append({"role": "user", "content": user_text})
+
+            assistant_text = str(raw_turn.get("assistant_text", "")).strip()
+            if assistant_text:
+                history.append({"role": "assistant", "content": assistant_text})
+
+        return history
+
     def _track_task(self, task: asyncio.Task[None]) -> asyncio.Task[None]:
         def _on_done(done_task: asyncio.Task[None]) -> None:
             self._response_tasks.discard(done_task)
@@ -540,6 +729,7 @@ class CallSession:
                         break
                     if playback_started_at is None:
                         playback_started_at = time.perf_counter()
+                        self._remember_assistant_echo_text(sentence.text)
                         logger.info(
                             "tts_playback_start call_id=%s sentence=%s text=%r",
                             self.context.call_id,
@@ -639,6 +829,32 @@ class CallSession:
 
         if pending_mulaw:
             yield bytes(pending_mulaw)
+
+    def _remember_assistant_echo_text(self, text: str) -> None:
+        normalized = self._normalize_echo_text(text)
+        if normalized:
+            self._assistant_echo_texts.append((time.monotonic(), normalized))
+
+    def _is_likely_assistant_echo(self, text: str) -> bool:
+        normalized = self._normalize_echo_text(text)
+        if not normalized:
+            return False
+
+        now = time.monotonic()
+        while self._assistant_echo_texts and now - self._assistant_echo_texts[0][0] > 12.0:
+            self._assistant_echo_texts.popleft()
+
+        for _, assistant_text in self._assistant_echo_texts:
+            if not assistant_text:
+                continue
+            if normalized in assistant_text or assistant_text in normalized:
+                return True
+            if SequenceMatcher(None, normalized, assistant_text).ratio() >= 0.72:
+                return True
+        return False
+
+    def _normalize_echo_text(self, text: str) -> str:
+        return re.sub(r"\s+", " ", re.sub(r"[^0-9A-Za-z가-힣\s]+", " ", text.lower())).strip()
 
     async def _send_audio_frame(self, frame: bytes) -> None:
         if not frame:

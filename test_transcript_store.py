@@ -10,6 +10,26 @@ from transcript_store import TranscriptStore
 
 
 class TranscriptStoreTests(unittest.IsolatedAsyncioTestCase):
+    async def test_completed_payload_includes_session_timing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store = TranscriptStore(tmpdir)
+            session_payload = {
+                "session_id": "timed-session",
+                "started_at": "2026-05-20T00:00:00+00:00",
+                "ended_at": "2026-05-20T00:02:05+00:00",
+                "metadata": {},
+                "turns": [],
+            }
+            Path(tmpdir, "timed-session.json").write_text(json.dumps(session_payload), encoding="utf-8")
+
+            session = await store.get_session("timed-session")
+            self.assertIsNotNone(session)
+            payload = store.build_completed_payload(session)
+
+            self.assertEqual(payload["startedAt"], "2026-05-20T00:00:00+00:00")
+            self.assertEqual(payload["endedAt"], "2026-05-20T00:02:05+00:00")
+            self.assertEqual(payload["durationMinutes"], 2)
+
     async def test_completed_payload_uses_structured_turns(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             store = TranscriptStore(tmpdir)
