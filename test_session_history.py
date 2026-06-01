@@ -67,7 +67,7 @@ class CallSessionHistoryTests(unittest.IsolatedAsyncioTestCase):
         )
 
     async def test_pending_user_query_combines_turns_after_last_completed_response(self) -> None:
-        self.session._last_completed_response_turn_index = 4
+        self.session._last_generated_response_turn_index = 4
         current_turn = ConversationTurn(
             index=7,
             created_at="2026-05-31T00:00:00+00:00",
@@ -80,11 +80,37 @@ class CallSessionHistoryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(query, "u5\nu6\ncurrent")
         self.assertEqual(history_before_turn_index, 5)
 
+    async def test_pending_user_query_excludes_generated_turn(self) -> None:
+        self.session._last_generated_response_turn_index = 6
+        current_turn = ConversationTurn(
+            index=7,
+            created_at="2026-05-31T00:00:00+00:00",
+            user_text="current",
+            sample_rate=16000,
+        )
+
+        query, history_before_turn_index = await self.session._pending_user_query(current_turn)
+
+        self.assertEqual(query, "current")
+        self.assertEqual(history_before_turn_index, 7)
+
     async def test_assistant_echo_text_is_ignored(self) -> None:
         self.session._remember_assistant_echo_text("I'm doing well, thanks for asking.")
 
         self.assertTrue(self.session._is_likely_assistant_echo("I am doing well thanks for asking"))
         self.assertFalse(self.session._is_likely_assistant_echo("Actually, I wanted to ask something else"))
+
+    async def test_user_acknowledgement_is_not_treated_as_echo(self) -> None:
+        self.session._remember_assistant_echo_text("Great to meet you!")
+
+        self.assertFalse(self.session._is_likely_assistant_echo("Yeah great to meet you too."))
+        self.assertTrue(self.session._is_likely_assistant_echo("Great to meet you."))
+
+    async def test_tts_text_sanitization_removes_emoji(self) -> None:
+        self.assertEqual(
+            self.session._sanitize_tts_text("😊 Stephen Curry 🏀⚽ is great."),
+            "Stephen Curry is great.",
+        )
 
 
 if __name__ == "__main__":

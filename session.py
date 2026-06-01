@@ -6,6 +6,7 @@ from difflib import SequenceMatcher
 import logging
 import re
 import time
+import unicodedata
 from dataclasses import dataclass, field
 from typing import Any, AsyncIterator
 
@@ -89,7 +90,7 @@ class CallSession:
         self._response_tasks: set[asyncio.Task[None]] = set()
         self._audio_upload_tasks: set[asyncio.Task[None]] = set()
         self._pending_user_audio = bytearray()
-        self._last_completed_response_turn_index = 0
+        self._last_generated_response_turn_index = 0
         self._assistant_echo_texts: deque[tuple[float, str]] = deque(maxlen=24)
 
     async def open(self) -> None:
@@ -283,6 +284,10 @@ class CallSession:
                         text=response_text,
                         llm_turn=llm_turn_index,
                     )
+                    self._last_generated_response_turn_index = max(
+                        self._last_generated_response_turn_index,
+                        turn.index,
+                    )
 
                 tail = self._flush_sentence_buffer()
                 if tail:
@@ -309,10 +314,6 @@ class CallSession:
 
                 if sentences:
                     await self._play_sentence_batch(sentences)
-                self._last_completed_response_turn_index = max(
-                    self._last_completed_response_turn_index,
-                    turn.index,
-                )
             except asyncio.CancelledError:
                 for sentence in sentences:
                     sentence.task.cancel()
@@ -382,7 +383,7 @@ class CallSession:
                 turn_index = int(raw_turn.get("index", 0))
             except (TypeError, ValueError):
                 continue
-            if turn_index <= self._last_completed_response_turn_index:
+            if turn_index <= self._last_generated_response_turn_index:
                 continue
             if turn_index > current_turn.index:
                 continue
@@ -702,6 +703,7 @@ class CallSession:
     def _enqueue_sentence_tasks(self, sentences: list[str], task_bucket: list[SentenceSynthesis]) -> None:
         for index, sentence in enumerate(sentences, start=len(task_bucket) + 1):
             cleaned = sentence.strip()
+            cleaned = self._sanitize_tts_text(cleaned)
             if not cleaned:
                 continue
             frame_queue: asyncio.Queue[bytes | None] = asyncio.Queue()
@@ -847,14 +849,33 @@ class CallSession:
         for _, assistant_text in self._assistant_echo_texts:
             if not assistant_text:
                 continue
-            if normalized in assistant_text or assistant_text in normalized:
+            if normalized == assistant_text:
                 return True
-            if SequenceMatcher(None, normalized, assistant_text).ratio() >= 0.72:
+            if self._looks_like_user_acknowledgement(normalized, assistant_text):
+                continue
+            if SequenceMatcher(None, normalized, assistant_text).ratio() >= 0.92:
                 return True
         return False
 
     def _normalize_echo_text(self, text: str) -> str:
         return re.sub(r"\s+", " ", re.sub(r"[^0-9A-Za-z가-힣\s]+", " ", text.lower())).strip()
+
+    def _looks_like_user_acknowledgement(self, normalized_text: str, assistant_text: str) -> bool:
+        if normalized_text == assistant_text:
+            return False
+        if not assistant_text or assistant_text not in normalized_text:
+            return False
+        acknowledgement_markers = ("yeah", "yes", "yep", "too", "also", "me too", "you too", "thanks", "thank you")
+        return any(marker in normalized_text.split() for marker in acknowledgement_markers)
+
+    def _sanitize_tts_text(self, text: str) -> str:
+        cleaned = "".join(
+            ch
+            for ch in text
+            if not unicodedata.category(ch).startswith("So")
+            and ch not in {"\ufe0f", "\u200d"}
+        )
+        return re.sub(r"\s+", " ", cleaned).strip()
 
     async def _send_audio_frame(self, frame: bytes) -> None:
         if not frame:
