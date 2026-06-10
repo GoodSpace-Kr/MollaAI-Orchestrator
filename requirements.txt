@@ -4,3 +4,4 @@ httpx==0.28.1
 websockets==15.0.1
 numpy==2.3.2
 boto3==1.35.99
+aiortc==1.13.0

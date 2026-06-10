@@ -26,6 +26,7 @@ ClawOps websocket과 `molla-stt`, `molla-llm`, `molla-tts`를 연결하는 오�
 - STT: `ws://127.0.0.1:8000/stt/ws`
 - LLM: `http://127.0.0.1:8001`
 - TTS: `http://127.0.0.1:8002`
+- Backend agent control WSS: 설정 시 서버 시작과 함께 상시 outbound 연결
 
 환경 변수로 변경할 수 있습니다.
 
@@ -67,6 +68,16 @@ export ORCH_PUBLIC_BASE_URL="https://orchestrator.example.com"
 - `ORCH_TTS_SAMPLE_RATE`
 - `ORCH_TTS_VOICE`
 - `ORCH_TTS_LANG_CODE`
+- `ORCH_AGENT_CONTROL_WSS_URL`
+  - 예시: `wss://api.example.com/api/v1/agents/control`
+- `ORCH_AGENT_TOKEN`
+  - 백엔드와 오케스트레이터가 공유하는 agent 인증 토큰입니다. Git에 커밋하지 말고 운영 환경변수로만 설정합니다.
+- `ORCH_AGENT_RECONNECT_DELAY_SECS`
+  - agent control WSS 연결이 끊겼을 때 재연결까지 대기할 초 단위 시간입니다. 기본값은 `5.0`입니다.
+
+`ORCH_AGENT_CONTROL_WSS_URL` 과 `ORCH_AGENT_TOKEN` 이 모두 설정되면 오케스트레이터는 부팅 시 백엔드 agent control WSS에 상시 연결합니다. 백엔드가 `join_call` 명령을 보내면 이 연결로 수신하고, 실제 통화 미디어는 이후 Cloudflare Realtime WebRTC 연결로 처리합니다.
+
+agent control WSS에서 수신하는 `join_call` 은 Cloudflare Realtime 세션 정보를 포함해야 합니다. 오케스트레이터는 `join_call` 수신 시 WebRTC audio peer를 만들고 백엔드로 `agent_webrtc_offer` 를 응답합니다. 백엔드는 이 offer를 Cloudflare Realtime SFU HTTPS API에 전달하고, 반환된 answer를 `webrtc_answer` 명령으로 다시 오케스트레이터에 보내야 합니다.
 
 ## 시작 payload
 

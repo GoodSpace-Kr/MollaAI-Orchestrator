@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from contextlib import asynccontextmanager
 import logging
 from typing import Any
@@ -12,8 +13,10 @@ import httpx
 from pydantic import BaseModel, Field
 import uvicorn
 
+from agent_control import AgentControlClient
 from clients import LlmHttpClient, SttWsClient, TtsHttpClient
 from config import OrchestratorConfig
+from realtime_media import RealtimeMediaManager
 from session import CallSession
 from storage import S3AudioStorage
 from transcript_store import TranscriptStore
@@ -31,6 +34,8 @@ async def lifespan(app: FastAPI):
     app.state.config = OrchestratorConfig.from_env()
     app.state.transcript_store = TranscriptStore(app.state.config.transcript_dir)
     app.state.audio_storage = None
+    app.state.agent_control_task = None
+    app.state.realtime_media_manager = RealtimeMediaManager()
     if app.state.config.s3_audio_bucket:
         app.state.audio_storage = S3AudioStorage(
             bucket=app.state.config.s3_audio_bucket,
@@ -38,7 +43,7 @@ async def lifespan(app: FastAPI):
             prefix=app.state.config.s3_audio_prefix,
         )
     logger.info(
-        "orchestrator_started host=%s port=%s public_base_url=%s transcript_dir=%s stt_ws_url=%s llm_http_url=%s tts_http_url=%s backend_session_start_url=%s backend_session_end_url_template=%s s3_audio_bucket=%s s3_audio_prefix=%s aws_region=%s",
+        "orchestrator_started host=%s port=%s public_base_url=%s transcript_dir=%s stt_ws_url=%s llm_http_url=%s tts_http_url=%s backend_session_start_url=%s backend_session_end_url_template=%s s3_audio_bucket=%s s3_audio_prefix=%s aws_region=%s agent_control_wss_url=%s",
         app.state.config.host,
         app.state.config.port,
         app.state.config.public_base_url,
@@ -51,8 +56,32 @@ async def lifespan(app: FastAPI):
         app.state.config.s3_audio_bucket,
         app.state.config.s3_audio_prefix,
         app.state.config.aws_region,
+        app.state.config.agent_control_wss_url,
     )
-    yield
+    if app.state.config.agent_control_wss_url and app.state.config.agent_token:
+        client = AgentControlClient(
+            url=app.state.config.agent_control_wss_url,
+            token=app.state.config.agent_token,
+            command_handler=app.state.realtime_media_manager.handle_command,
+            reconnect_delay_secs=app.state.config.agent_reconnect_delay_secs,
+        )
+        app.state.agent_control_client = client
+        app.state.agent_control_task = asyncio.create_task(client.run_forever(), name="agent-control")
+        logger.info("agent_control_task_started url=%s", app.state.config.agent_control_wss_url)
+    elif app.state.config.agent_control_wss_url or app.state.config.agent_token:
+        logger.warning("agent_control_disabled_missing_url_or_token")
+
+    try:
+        yield
+    finally:
+        task = app.state.agent_control_task
+        if task is not None:
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+            logger.info("agent_control_task_stopped")
 
 
 app = FastAPI(title="Molla Orchestrator", lifespan=lifespan)

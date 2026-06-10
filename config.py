@@ -28,6 +28,9 @@ class OrchestratorConfig:
     s3_audio_bucket: str | None = None
     s3_audio_prefix: str = "calls"
     aws_region: str = "ap-northeast-2"
+    agent_control_wss_url: str | None = None
+    agent_token: str | None = None
+    agent_reconnect_delay_secs: float = 5.0
 
     @classmethod
     def from_env(cls) -> "OrchestratorConfig":
@@ -60,4 +63,7 @@ class OrchestratorConfig:
             s3_audio_bucket=os.getenv("ORCH_S3_AUDIO_BUCKET"),
             s3_audio_prefix=os.getenv("ORCH_S3_AUDIO_PREFIX", "calls"),
             aws_region=os.getenv("AWS_REGION", "ap-northeast-2"),
+            agent_control_wss_url=os.getenv("ORCH_AGENT_CONTROL_WSS_URL"),
+            agent_token=os.getenv("ORCH_AGENT_TOKEN"),
+            agent_reconnect_delay_secs=float(os.getenv("ORCH_AGENT_RECONNECT_DELAY_SECS", "5.0")),
         )
