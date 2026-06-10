@@ -1,104 +1,52 @@
-name: Deploy to EC2 (Orchestrator)
+name: Build and Push Orchestrator Image
 
 on:
   push:
-    branches: [ "main" ]
+    branches: ["main"]
 
 env:
   DOCKERHUB_REPO: goodspace/molla-orchestrator
   DOCKERHUB_BASE_REPO: goodspace/molla-orchestrator-base
-  CONTAINER_NAME: molla-orchestrator
-  TARGET_IPS: "13.124.118.148"
 
 jobs:
-  deploy:
+  build-and-push:
     runs-on: ubuntu-latest
 
     steps:
-    - name: Checkout
-      uses: actions/checkout@v3
-      with:
-        fetch-depth: 2
+      - name: Checkout
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 2
 
-    - name: Login to Docker Hub
-      uses: docker/login-action@v3
-      with:
-        username: ${{ secrets.DOCKERHUB_USERNAME }}
-        password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-    - name: Decide whether base image changed
-      id: base_changed
-      run: |
-        BEFORE_SHA="${{ github.event.before }}"
-        if [ "$BEFORE_SHA" = "0000000000000000000000000000000000000000" ]; then
-          echo "changed=true" >> "$GITHUB_OUTPUT"
-        elif git diff --name-only "$BEFORE_SHA" "${{ github.sha }}" | grep -Eq '^(Dockerfile.base|requirements.txt)$'; then
-          echo "changed=true" >> "$GITHUB_OUTPUT"
-        else
-          echo "changed=false" >> "$GITHUB_OUTPUT"
-        fi
-
-    - name: Build and push base image
-      if: steps.base_changed.outputs.changed == 'true'
-      run: |
-        docker build -f Dockerfile.base \
-          -t ${{ env.DOCKERHUB_BASE_REPO }}:py311 .
-        docker push ${{ env.DOCKERHUB_BASE_REPO }}:py311
-
-    - name: Build and push app image
-      run: |
-        docker build \
-          -t ${{ env.DOCKERHUB_REPO }}:${{ github.sha }} \
-          -t ${{ env.DOCKERHUB_REPO }}:latest .
-        docker push ${{ env.DOCKERHUB_REPO }}:${{ github.sha }}
-        docker push ${{ env.DOCKERHUB_REPO }}:latest
-
-    - name: Deploy
-      run: |
-        printf "%s" "${{ secrets.EC2_SSH_KEY }}" > private_key.pem
-        chmod 600 private_key.pem
-        require_value() {
-          if [ -z "$2" ]; then
-            echo "::error::Missing required GitHub $1"
-            exit 1
+      - name: Decide whether base image changed
+        id: base_changed
+        run: |
+          BEFORE_SHA="${{ github.event.before }}"
+          if [ "$BEFORE_SHA" = "0000000000000000000000000000000000000000" ]; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          elif git diff --name-only "$BEFORE_SHA" "${{ github.sha }}" | grep -Eq '^(Dockerfile.base|requirements.txt)$'; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=false" >> "$GITHUB_OUTPUT"
           fi
-        }
 
-        require_value "variable ORCH_STT_WS_URL" '${{ vars.ORCH_STT_WS_URL }}'
-        require_value "variable ORCH_LLM_HTTP_URL" '${{ vars.ORCH_LLM_HTTP_URL }}'
-        require_value "variable ORCH_TTS_HTTP_URL" '${{ vars.ORCH_TTS_HTTP_URL }}'
-        require_value "variable ORCH_AGENT_CONTROL_WSS_URL" '${{ vars.ORCH_AGENT_CONTROL_WSS_URL }}'
-        require_value "secret ORCH_AGENT_TOKEN" '${{ secrets.ORCH_AGENT_TOKEN }}'
-        require_value "variable AWS_REGION" '${{ vars.AWS_REGION }}'
-        require_value "variable ORCH_S3_AUDIO_BUCKET" '${{ vars.ORCH_S3_AUDIO_BUCKET }}'
-        require_value "variable ORCH_S3_AUDIO_PREFIX" '${{ vars.ORCH_S3_AUDIO_PREFIX }}'
-        require_value "secret AWS_S3_ACCESS_KEY" '${{ secrets.AWS_S3_ACCESS_KEY }}'
-        require_value "secret AWS_S3_SECRET_KEY" '${{ secrets.AWS_S3_SECRET_KEY }}'
+      - name: Build and push base image
+        if: steps.base_changed.outputs.changed == 'true'
+        run: |
+          docker build -f Dockerfile.base \
+            -t ${{ env.DOCKERHUB_BASE_REPO }}:py311 .
+          docker push ${{ env.DOCKERHUB_BASE_REPO }}:py311
 
-        for IP in ${{ env.TARGET_IPS }}; do
-          echo "🚀 Deploying to $IP..."
-          ssh -i private_key.pem -o StrictHostKeyChecking=no ubuntu@$IP "
-            set -e
-            IMAGE=${{ env.DOCKERHUB_REPO }}:${{ github.sha }}
-            printf '%s' '${{ secrets.DOCKERHUB_TOKEN }}' | docker login -u '${{ secrets.DOCKERHUB_USERNAME }}' --password-stdin
-            docker stop ${{ env.CONTAINER_NAME }} || true
-            docker rm ${{ env.CONTAINER_NAME }} || true
-            docker image prune -af || true
-            docker builder prune -af || true
-            docker pull \$IMAGE
-            docker run -d --restart unless-stopped --name ${{ env.CONTAINER_NAME }} -p 8010:8010 \
-              -e ORCH_PUBLIC_BASE_URL='${{ vars.ORCH_PUBLIC_BASE_URL }}' \
-              -e ORCH_STT_WS_URL='${{ vars.ORCH_STT_WS_URL }}' \
-              -e ORCH_LLM_HTTP_URL='${{ vars.ORCH_LLM_HTTP_URL }}' \
-              -e ORCH_TTS_HTTP_URL='${{ vars.ORCH_TTS_HTTP_URL }}' \
-              -e ORCH_AGENT_CONTROL_WSS_URL='${{ vars.ORCH_AGENT_CONTROL_WSS_URL }}' \
-              -e ORCH_AGENT_TOKEN='${{ secrets.ORCH_AGENT_TOKEN }}' \
-              -e AWS_REGION='${{ vars.AWS_REGION }}' \
-              -e ORCH_S3_AUDIO_BUCKET='${{ vars.ORCH_S3_AUDIO_BUCKET }}' \
-              -e ORCH_S3_AUDIO_PREFIX='${{ vars.ORCH_S3_AUDIO_PREFIX }}' \
-              -e AWS_S3_ACCESS_KEY='${{ secrets.AWS_S3_ACCESS_KEY }}' \
-              -e AWS_S3_SECRET_KEY='${{ secrets.AWS_S3_SECRET_KEY }}' \
-              \$IMAGE
-            docker image prune -af || true
-          "
-        done
+      - name: Build and push app image
+        run: |
+          docker build \
+            -t ${{ env.DOCKERHUB_REPO }}:${{ github.sha }} \
+            -t ${{ env.DOCKERHUB_REPO }}:latest .
+          docker push ${{ env.DOCKERHUB_REPO }}:${{ github.sha }}
+          docker push ${{ env.DOCKERHUB_REPO }}:latest

@@ -61,7 +61,7 @@ export ORCH_PUBLIC_BASE_URL="https://orchestrator.example.com"
 
 ### 설정 소유 구분
 
-`config.py` 는 코드가 가져도 되는 안전한 기본값만 가집니다. 서버 주소, 토큰, AWS 키처럼 환경마다 달라지는 값은 코드나 Dockerfile에 넣지 않습니다.
+`config.py` 는 코드가 가져도 되는 안전한 기본값만 가집니다. 서버 주소와 토큰처럼 환경마다 달라지는 값은 코드나 Dockerfile에 넣지 않습니다.
 
 로컬 홈서버의 `docker-compose.yml` 은 `molla-orchestrator/.env` 에서 아래 값만 받습니다.
 
@@ -71,29 +71,9 @@ export ORCH_PUBLIC_BASE_URL="https://orchestrator.example.com"
 - `ORCH_LLM_HTTP_URL`
 - `ORCH_TTS_HTTP_URL`
 
-GitHub Actions EC2 배포는 `.github/workflows/deploy.yml` 에서 GitHub `vars` 와 `secrets` 로 받습니다.
-
-GitHub `vars`:
-
-- `ORCH_PUBLIC_BASE_URL`
-- `ORCH_STT_WS_URL`
-- `ORCH_LLM_HTTP_URL`
-- `ORCH_TTS_HTTP_URL`
-- `ORCH_AGENT_CONTROL_WSS_URL`
-- `AWS_REGION`
-- `ORCH_S3_AUDIO_BUCKET`
-- `ORCH_S3_AUDIO_PREFIX`
-
-GitHub `secrets`:
-
-- `DOCKERHUB_USERNAME`
-- `DOCKERHUB_TOKEN`
-- `EC2_SSH_KEY`
-- `ORCH_AGENT_TOKEN`
-- `AWS_S3_ACCESS_KEY`
-- `AWS_S3_SECRET_KEY`
-
 `ORCH_AGENT_TOKEN` 은 백엔드의 `AI_AGENT_TOKEN` 과 같은 값이어야 합니다.
+
+GitHub Actions는 Docker 이미지를 Docker Hub에 빌드/푸시까지만 합니다. 운영 서버에 SSH 접속하거나 `docker run`으로 배포하지 않습니다. 로컬 홈서버 실행은 `docker-compose.yml` 과 `.env` 로 관리합니다.
 
 - `ORCH_PUBLIC_BASE_URL`
 - `ORCH_STT_WS_URL`

@@ -74,13 +74,14 @@ class ConfigurationOwnershipTest(unittest.TestCase):
         self.assertNotIn("AWS_S3_SECRET_KEY", compose)
         self.assertNotIn("ORCH_S3_AUDIO_BUCKET", compose)
 
-    def test_github_deploy_passes_and_validates_required_runtime_values(self) -> None:
-        deploy = (ROOT / ".github/workflows/deploy.yml").read_text()
+    def test_github_workflow_only_builds_and_pushes_images(self) -> None:
+        workflow = (ROOT / ".github/workflows/deploy.yml").read_text()
 
-        for key in REQUIRED_RUNTIME_ENV_KEYS:
-            self.assertIn(f"require_value", deploy)
-            self.assertIn(key, deploy)
-            self.assertIn(f"-e {key}=", deploy)
+        self.assertIn("docker build", workflow)
+        self.assertIn("docker push", workflow)
+        self.assertNotIn("ssh -i", workflow)
+        self.assertNotIn("docker run", workflow)
+        self.assertNotIn("EC2_SSH_KEY", workflow)
 
 
 if __name__ == "__main__":
