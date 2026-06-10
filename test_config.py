@@ -57,6 +57,8 @@ class ConfigurationOwnershipTest(unittest.TestCase):
     def test_local_compose_passes_all_required_runtime_values(self) -> None:
         compose = (ROOT / "docker-compose.yml").read_text()
 
+        self.assertIn("image: goodspace/molla-orchestrator:latest", compose)
+        self.assertNotIn("build:", compose)
         for key in REQUIRED_RUNTIME_ENV_KEYS:
             self.assertIn(f"{key}:", compose)
             self.assertIn(f"${{{key}:?", compose)

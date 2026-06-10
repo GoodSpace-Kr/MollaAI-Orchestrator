@@ -1,8 +1,6 @@
 services:
   molla-orchestrator:
-    build:
-      context: .
-      dockerfile: Dockerfile
+    image: goodspace/molla-orchestrator:latest
     container_name: molla-orchestrator
     restart: unless-stopped
     ports:
