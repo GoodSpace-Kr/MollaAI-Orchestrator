@@ -57,6 +57,23 @@ jobs:
       run: |
         printf "%s" "${{ secrets.EC2_SSH_KEY }}" > private_key.pem
         chmod 600 private_key.pem
+        require_value() {
+          if [ -z "$2" ]; then
+            echo "::error::Missing required GitHub $1"
+            exit 1
+          fi
+        }
+
+        require_value "variable ORCH_STT_WS_URL" '${{ vars.ORCH_STT_WS_URL }}'
+        require_value "variable ORCH_LLM_HTTP_URL" '${{ vars.ORCH_LLM_HTTP_URL }}'
+        require_value "variable ORCH_TTS_HTTP_URL" '${{ vars.ORCH_TTS_HTTP_URL }}'
+        require_value "variable ORCH_AGENT_CONTROL_WSS_URL" '${{ vars.ORCH_AGENT_CONTROL_WSS_URL }}'
+        require_value "secret ORCH_AGENT_TOKEN" '${{ secrets.ORCH_AGENT_TOKEN }}'
+        require_value "variable AWS_REGION" '${{ vars.AWS_REGION }}'
+        require_value "variable ORCH_S3_AUDIO_BUCKET" '${{ vars.ORCH_S3_AUDIO_BUCKET }}'
+        require_value "variable ORCH_S3_AUDIO_PREFIX" '${{ vars.ORCH_S3_AUDIO_PREFIX }}'
+        require_value "secret AWS_S3_ACCESS_KEY" '${{ secrets.AWS_S3_ACCESS_KEY }}'
+        require_value "secret AWS_S3_SECRET_KEY" '${{ secrets.AWS_S3_SECRET_KEY }}'
 
         for IP in ${{ env.TARGET_IPS }}; do
           echo "🚀 Deploying to $IP..."
@@ -70,10 +87,15 @@ jobs:
             docker builder prune -af || true
             docker pull \$IMAGE
             docker run -d --restart unless-stopped --name ${{ env.CONTAINER_NAME }} -p 8010:8010 \
-              -e ORCH_PUBLIC_BASE_URL=https://orch.mollatalk.com \
-              -e AWS_REGION=ap-northeast-2 \
-              -e ORCH_S3_AUDIO_BUCKET=molla-call-audio-prod \
-              -e ORCH_S3_AUDIO_PREFIX=calls \
+              -e ORCH_PUBLIC_BASE_URL='${{ vars.ORCH_PUBLIC_BASE_URL }}' \
+              -e ORCH_STT_WS_URL='${{ vars.ORCH_STT_WS_URL }}' \
+              -e ORCH_LLM_HTTP_URL='${{ vars.ORCH_LLM_HTTP_URL }}' \
+              -e ORCH_TTS_HTTP_URL='${{ vars.ORCH_TTS_HTTP_URL }}' \
+              -e ORCH_AGENT_CONTROL_WSS_URL='${{ vars.ORCH_AGENT_CONTROL_WSS_URL }}' \
+              -e ORCH_AGENT_TOKEN='${{ secrets.ORCH_AGENT_TOKEN }}' \
+              -e AWS_REGION='${{ vars.AWS_REGION }}' \
+              -e ORCH_S3_AUDIO_BUCKET='${{ vars.ORCH_S3_AUDIO_BUCKET }}' \
+              -e ORCH_S3_AUDIO_PREFIX='${{ vars.ORCH_S3_AUDIO_PREFIX }}' \
               -e AWS_S3_ACCESS_KEY='${{ secrets.AWS_S3_ACCESS_KEY }}' \
               -e AWS_S3_SECRET_KEY='${{ secrets.AWS_S3_SECRET_KEY }}' \
               \$IMAGE

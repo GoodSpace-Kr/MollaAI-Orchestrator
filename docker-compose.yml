@@ -1,0 +1,20 @@
+services:
+  molla-orchestrator:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: molla-orchestrator
+    restart: unless-stopped
+    ports:
+      - "8010:8010"
+    environment:
+      ORCH_STT_WS_URL: "${ORCH_STT_WS_URL:?Set ORCH_STT_WS_URL in .env}"
+      ORCH_LLM_HTTP_URL: "${ORCH_LLM_HTTP_URL:?Set ORCH_LLM_HTTP_URL in .env}"
+      ORCH_TTS_HTTP_URL: "${ORCH_TTS_HTTP_URL:?Set ORCH_TTS_HTTP_URL in .env}"
+      ORCH_AGENT_CONTROL_WSS_URL: "${ORCH_AGENT_CONTROL_WSS_URL:?Set ORCH_AGENT_CONTROL_WSS_URL in .env}"
+      ORCH_AGENT_TOKEN: "${ORCH_AGENT_TOKEN:?Set ORCH_AGENT_TOKEN in .env}"
+    volumes:
+      - orchestrator_transcripts:/app/transcripts
+
+volumes:
+  orchestrator_transcripts:

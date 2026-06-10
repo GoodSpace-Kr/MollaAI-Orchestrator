@@ -59,11 +59,49 @@ export ORCH_PUBLIC_BASE_URL="https://orchestrator.example.com"
 
 ## 주요 환경 변수
 
-- `ORCH_PUBLIC_BASE_URL`
+### 설정 소유 구분
+
+`config.py` 는 코드가 가져도 되는 안전한 기본값만 가집니다. 서버 주소, 토큰, AWS 키처럼 환경마다 달라지는 값은 코드나 Dockerfile에 넣지 않습니다.
+
+로컬 홈서버의 `docker-compose.yml` 은 `molla-orchestrator/.env` 에서 아래 값만 받습니다.
+
+- `ORCH_AGENT_CONTROL_WSS_URL`
+- `ORCH_AGENT_TOKEN`
 - `ORCH_STT_WS_URL`
-  - 예시: `ws://3.36.166.43:8000/stt/ws`
 - `ORCH_LLM_HTTP_URL`
 - `ORCH_TTS_HTTP_URL`
+
+GitHub Actions EC2 배포는 `.github/workflows/deploy.yml` 에서 GitHub `vars` 와 `secrets` 로 받습니다.
+
+GitHub `vars`:
+
+- `ORCH_PUBLIC_BASE_URL`
+- `ORCH_STT_WS_URL`
+- `ORCH_LLM_HTTP_URL`
+- `ORCH_TTS_HTTP_URL`
+- `ORCH_AGENT_CONTROL_WSS_URL`
+- `AWS_REGION`
+- `ORCH_S3_AUDIO_BUCKET`
+- `ORCH_S3_AUDIO_PREFIX`
+
+GitHub `secrets`:
+
+- `DOCKERHUB_USERNAME`
+- `DOCKERHUB_TOKEN`
+- `EC2_SSH_KEY`
+- `ORCH_AGENT_TOKEN`
+- `AWS_S3_ACCESS_KEY`
+- `AWS_S3_SECRET_KEY`
+
+`ORCH_AGENT_TOKEN` 은 백엔드의 `AI_AGENT_TOKEN` 과 같은 값이어야 합니다.
+
+- `ORCH_PUBLIC_BASE_URL`
+- `ORCH_STT_WS_URL`
+  - 필수. 예시: `ws://molla-stt:8000/stt/ws`
+- `ORCH_LLM_HTTP_URL`
+  - 필수. 예시: `http://molla-llm:8001`
+- `ORCH_TTS_HTTP_URL`
+  - 필수. 예시: `http://molla-tts:8002`
 - `ORCH_STT_SAMPLE_RATE`
 - `ORCH_TTS_SAMPLE_RATE`
 - `ORCH_TTS_VOICE`

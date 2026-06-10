@@ -62,6 +62,9 @@ class AgentControlTests(unittest.IsolatedAsyncioTestCase):
                 "ORCH_AGENT_CONTROL_WSS_URL": "wss://api.example.com/api/v1/agents/control",
                 "ORCH_AGENT_TOKEN": "agent-token",
                 "ORCH_AGENT_RECONNECT_DELAY_SECS": "0.25",
+                "ORCH_STT_WS_URL": "ws://stt.local:8000/stt/ws",
+                "ORCH_LLM_HTTP_URL": "http://llm.local:8001",
+                "ORCH_TTS_HTTP_URL": "http://tts.local:8002",
             },
             clear=False,
         ):
