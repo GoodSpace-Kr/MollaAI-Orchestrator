@@ -34,7 +34,7 @@ class RealtimeMediaManager:
         self.session_description_factory = session_description_factory or self._create_session_description
         self.calls: dict[str, RealtimeCall] = {}
 
-    async def handle_command(self, payload: dict[str, Any], *, send_json: SendJson) -> None:
+    async def handle_command(self, payload: dict[str, Any], send_json: SendJson) -> None:
         message_type = str(payload.get("type", "")).strip()
         if message_type == "join_call":
             await self.join_call(payload, send_json=send_json)

@@ -90,6 +90,26 @@ class RealtimeMediaManagerTests(unittest.IsolatedAsyncioTestCase):
             ],
         )
 
+    async def test_handle_command_accepts_agent_control_positional_send_json(self) -> None:
+        sent: list[dict] = []
+        peer = FakePeerConnection()
+        manager = RealtimeMediaManager(
+            peer_connection_factory=lambda: peer,
+            session_description_factory=lambda *, sdp, type: FakeDescription(sdp=sdp, type=type),
+        )
+
+        await manager.handle_command(
+            {
+                "type": "join_call",
+                "callId": "call-1",
+                "sessionId": "backend-session-1",
+                "realtime": {"sessionId": "cf-session-1"},
+            },
+            sent.append,
+        )
+
+        self.assertEqual(sent[0]["type"], "agent_webrtc_offer")
+
     async def test_webrtc_answer_applies_remote_description(self) -> None:
         peer = FakePeerConnection()
         manager = RealtimeMediaManager(
