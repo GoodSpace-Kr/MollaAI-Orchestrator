@@ -1,4 +1,4 @@
-FROM python:3.11-slim
+FROM python:3.11-slim-trixie
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
@@ -11,9 +11,14 @@ RUN apt-get update && \
         build-essential \
         pkg-config \
         ffmpeg \
+        libavcodec-dev \
         libavdevice-dev \
         libavfilter-dev \
+        libavformat-dev \
+        libavutil-dev \
         libopus-dev \
+        libswresample-dev \
+        libswscale-dev \
         libvpx-dev && \
     rm -rf /var/lib/apt/lists/*
 
