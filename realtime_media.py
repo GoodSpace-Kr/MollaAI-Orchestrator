@@ -130,6 +130,7 @@ class RealtimeMediaManager:
         def on_track(track: Any) -> None:
             if getattr(track, "kind", "") != "audio":
                 return
+            logger.info("realtime_audio_track_received call_id=%s kind=%s", call_id, getattr(track, "kind", ""))
             call = self.calls.get(call_id)
             if call is None:
                 return
@@ -138,8 +139,17 @@ class RealtimeMediaManager:
             task.add_done_callback(call.media_tasks.discard)
 
     async def _consume_audio_track(self, call_id: str, track: Any) -> None:
+        frame_count = 0
         while True:
             frame = await track.recv()
+            frame_count += 1
+            if frame_count == 1 or frame_count % 100 == 0:
+                logger.info(
+                    "realtime_audio_frame_received call_id=%s frame_count=%s frame=%s",
+                    call_id,
+                    frame_count,
+                    type(frame).__name__,
+                )
             logger.debug("realtime_audio_frame call_id=%s frame=%s", call_id, type(frame).__name__)
 
     async def _send_json(self, send_json: SendJson, payload: dict[str, Any]) -> None:
