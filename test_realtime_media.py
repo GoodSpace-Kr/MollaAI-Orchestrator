@@ -184,6 +184,21 @@ class RealtimeMediaManagerTests(unittest.IsolatedAsyncioTestCase):
             ],
         )
 
+    async def test_agent_control_error_is_handled_without_response(self) -> None:
+        sent: list[dict] = []
+        manager = RealtimeMediaManager()
+
+        await manager.handle_command(
+            {
+                "type": "agent_control_error",
+                "callId": "call-1",
+                "message": "renegotiation failed",
+            },
+            send_json=sent.append,
+        )
+
+        self.assertEqual(sent, [])
+
     async def test_end_call_closes_peer_connection(self) -> None:
         peer = FakePeerConnection()
         manager = RealtimeMediaManager(

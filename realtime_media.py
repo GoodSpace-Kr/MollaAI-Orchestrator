@@ -45,6 +45,13 @@ class RealtimeMediaManager:
         if message_type == "webrtc_renegotiate":
             await self.create_renegotiation_offer(payload, send_json=send_json)
             return
+        if message_type == "agent_control_error":
+            logger.warning(
+                "agent_control_error call_id=%s message=%s",
+                payload.get("callId", ""),
+                payload.get("message", ""),
+            )
+            return
         if message_type in {"end_call", "call_ended"}:
             await self.end_call(str(payload.get("callId", "")))
             return
