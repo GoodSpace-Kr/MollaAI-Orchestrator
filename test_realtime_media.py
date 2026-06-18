@@ -33,6 +33,9 @@ class FakePeerConnection:
     async def createOffer(self) -> FakeDescription:
         return FakeDescription(sdp="local-sdp", type="offer")
 
+    async def createAnswer(self) -> FakeDescription:
+        return FakeDescription(sdp="local-answer-sdp", type="answer")
+
     async def setLocalDescription(self, description: FakeDescription) -> None:
         self.localDescription = description
 
@@ -142,7 +145,7 @@ class RealtimeMediaManagerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(peer.remote_descriptions[0].type, "answer")
         self.assertEqual(peer.remote_descriptions[0].sdp, "remote-sdp")
 
-    async def test_webrtc_renegotiate_sends_new_offer(self) -> None:
+    async def test_webrtc_renegotiate_answers_remote_offer(self) -> None:
         sent: list[dict] = []
         peer = FakePeerConnection()
         manager = RealtimeMediaManager(
@@ -164,21 +167,28 @@ class RealtimeMediaManagerTests(unittest.IsolatedAsyncioTestCase):
                 "type": "webrtc_renegotiate",
                 "callId": "call-1",
                 "realtimeSessionId": "cf-session-1",
+                "sessionDescription": {
+                    "type": "offer",
+                    "sdp": "cloudflare-renegotiation-offer-sdp",
+                },
             },
             send_json=sent.append,
         )
 
+        self.assertEqual(len(peer.remote_descriptions), 1)
+        self.assertEqual(peer.remote_descriptions[0].type, "offer")
+        self.assertEqual(peer.remote_descriptions[0].sdp, "cloudflare-renegotiation-offer-sdp")
         self.assertEqual(
             sent,
             [
                 {
-                    "type": "agent_webrtc_renegotiation_offer",
+                    "type": "agent_webrtc_renegotiation_answer",
                     "callId": "call-1",
                     "sessionId": "backend-session-1",
                     "realtimeSessionId": "cf-session-1",
                     "sessionDescription": {
-                        "type": "offer",
-                        "sdp": "local-sdp",
+                        "type": "answer",
+                        "sdp": "local-answer-sdp",
                     },
                 }
             ],

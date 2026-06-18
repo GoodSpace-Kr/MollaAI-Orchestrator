@@ -43,7 +43,7 @@ class RealtimeMediaManager:
             await self.apply_answer(payload)
             return
         if message_type == "webrtc_renegotiate":
-            await self.create_renegotiation_offer(payload, send_json=send_json)
+            await self.answer_renegotiation_offer(payload, send_json=send_json)
             return
         if message_type == "agent_control_error":
             logger.warning(
@@ -119,20 +119,30 @@ class RealtimeMediaManager:
         await call.peer_connection.setRemoteDescription(remote)
         logger.info("realtime_answer_applied call_id=%s", call_id)
 
-    async def create_renegotiation_offer(self, payload: dict[str, Any], *, send_json: SendJson) -> None:
+    async def answer_renegotiation_offer(self, payload: dict[str, Any], *, send_json: SendJson) -> None:
         call_id = str(payload.get("callId", "")).strip()
         call = self.calls.get(call_id)
         if call is None:
             logger.warning("realtime_renegotiate_unknown_call call_id=%s", call_id)
             return
 
+        description = payload.get("sessionDescription")
+        if not isinstance(description, dict):
+            logger.warning("realtime_renegotiate_missing_description call_id=%s", call_id)
+            return
+
         realtime_session_id = str(payload.get("realtimeSessionId", call.realtime_session_id)).strip()
-        offer = await call.peer_connection.createOffer()
-        await call.peer_connection.setLocalDescription(offer)
+        remote = self.session_description_factory(
+            sdp=str(description.get("sdp", "")),
+            type=str(description.get("type", "")),
+        )
+        await call.peer_connection.setRemoteDescription(remote)
+        answer = await call.peer_connection.createAnswer()
+        await call.peer_connection.setLocalDescription(answer)
         await self._send_json(
             send_json,
             {
-                "type": "agent_webrtc_renegotiation_offer",
+                "type": "agent_webrtc_renegotiation_answer",
                 "callId": call_id,
                 "sessionId": call.session_id,
                 "realtimeSessionId": realtime_session_id,
@@ -142,7 +152,7 @@ class RealtimeMediaManager:
                 },
             },
         )
-        logger.info("realtime_renegotiation_offer_sent call_id=%s realtime_session_id=%s", call_id, realtime_session_id)
+        logger.info("realtime_renegotiation_answer_sent call_id=%s realtime_session_id=%s", call_id, realtime_session_id)
 
     async def end_call(self, call_id: str) -> None:
         if not call_id:
