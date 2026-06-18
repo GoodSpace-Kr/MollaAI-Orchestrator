@@ -42,6 +42,9 @@ class RealtimeMediaManager:
         if message_type == "webrtc_answer":
             await self.apply_answer(payload)
             return
+        if message_type == "webrtc_renegotiate":
+            await self.create_renegotiation_offer(payload, send_json=send_json)
+            return
         if message_type in {"end_call", "call_ended"}:
             await self.end_call(str(payload.get("callId", "")))
             return
@@ -108,6 +111,31 @@ class RealtimeMediaManager:
         )
         await call.peer_connection.setRemoteDescription(remote)
         logger.info("realtime_answer_applied call_id=%s", call_id)
+
+    async def create_renegotiation_offer(self, payload: dict[str, Any], *, send_json: SendJson) -> None:
+        call_id = str(payload.get("callId", "")).strip()
+        call = self.calls.get(call_id)
+        if call is None:
+            logger.warning("realtime_renegotiate_unknown_call call_id=%s", call_id)
+            return
+
+        realtime_session_id = str(payload.get("realtimeSessionId", call.realtime_session_id)).strip()
+        offer = await call.peer_connection.createOffer()
+        await call.peer_connection.setLocalDescription(offer)
+        await self._send_json(
+            send_json,
+            {
+                "type": "agent_webrtc_renegotiation_offer",
+                "callId": call_id,
+                "sessionId": call.session_id,
+                "realtimeSessionId": realtime_session_id,
+                "sessionDescription": {
+                    "type": call.peer_connection.localDescription.type,
+                    "sdp": call.peer_connection.localDescription.sdp,
+                },
+            },
+        )
+        logger.info("realtime_renegotiation_offer_sent call_id=%s realtime_session_id=%s", call_id, realtime_session_id)
 
     async def end_call(self, call_id: str) -> None:
         if not call_id:

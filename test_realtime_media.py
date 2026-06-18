@@ -142,6 +142,48 @@ class RealtimeMediaManagerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(peer.remote_descriptions[0].type, "answer")
         self.assertEqual(peer.remote_descriptions[0].sdp, "remote-sdp")
 
+    async def test_webrtc_renegotiate_sends_new_offer(self) -> None:
+        sent: list[dict] = []
+        peer = FakePeerConnection()
+        manager = RealtimeMediaManager(
+            peer_connection_factory=lambda: peer,
+            session_description_factory=lambda *, sdp, type: FakeDescription(sdp=sdp, type=type),
+        )
+        await manager.handle_command(
+            {
+                "type": "join_call",
+                "callId": "call-1",
+                "sessionId": "backend-session-1",
+                "realtime": {"sessionId": "cf-session-1"},
+            },
+            send_json=AsyncMock(),
+        )
+
+        await manager.handle_command(
+            {
+                "type": "webrtc_renegotiate",
+                "callId": "call-1",
+                "realtimeSessionId": "cf-session-1",
+            },
+            send_json=sent.append,
+        )
+
+        self.assertEqual(
+            sent,
+            [
+                {
+                    "type": "agent_webrtc_renegotiation_offer",
+                    "callId": "call-1",
+                    "sessionId": "backend-session-1",
+                    "realtimeSessionId": "cf-session-1",
+                    "sessionDescription": {
+                        "type": "offer",
+                        "sdp": "local-sdp",
+                    },
+                }
+            ],
+        )
+
     async def test_end_call_closes_peer_connection(self) -> None:
         peer = FakePeerConnection()
         manager = RealtimeMediaManager(
